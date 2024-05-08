@@ -1,6 +1,6 @@
 import numpy as np
 from testbed import Testbed
-from QuasistaticSource import QuasiStaticSource as qs
+from QuasistaticSource import AdaptiveVelocityController
 import cv2 as cv
 from T3pro import T3pro
 import matplotlib.pyplot as plt
@@ -9,7 +9,7 @@ testbed = Testbed()
 t3 = T3pro()
 
 scale = 0.13  # pixels per mm
-qs = qs(des_width=10/scale)
+qs = AdaptiveVelocityController(des_width=10 / scale)
 
 testbed.home()
 print("Homing...")
@@ -26,8 +26,8 @@ while True:
         continue
 
     if debug:
-        tmax = info['Tmax_C']
-        tmin = info['Tmin_C']
+        tmax = info.Tmax_C
+        tmin = info.Tmin_C
         thermal_arr = cv.normalize(thermal_arr, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
         hist = cv.calcHist([thermal_arr], [0], None, [256], [0, 256])
         bins = np.arange(tmin, tmax, (tmax - tmin) / 256)

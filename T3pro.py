@@ -2,8 +2,26 @@ import cv2
 import numpy as np
 from datetime import datetime
 import math
+from dataclasses import dataclass, fields
 
 debug = 0
+
+
+@dataclass
+class Info:
+    Tmin_C: float
+    Tmin_raw: int
+    Tmin_point: tuple[int, int]
+    Tmax_C: float
+    Tmax_raw: int
+    Tmax_point: tuple[int, int]
+    Tcenter_C: float
+    Tcenter_raw: int
+    Tcenter_point: tuple[int, int]
+    device_strings: list[str]
+    device_type: str
+    date: datetime
+    meta: np.ndarray
 
 
 def f32(m3: np.ndarray, idx: int) -> float:
@@ -164,7 +182,7 @@ def temperatureLut(fpatmp_: float, meta3: np.ndarray) -> np.ndarray:
 def info(meta: np.ndarray,
          device_strings: list[str],
          width: int, height: int,
-         meta_mapping=None) -> tuple[dict, np.ndarray]:
+         meta_mapping=None) -> tuple[Info, np.ndarray]:
     if meta_mapping is None:
         meta_mapping = [0, 3]
     meta0, meta3 = meta[meta_mapping[0]], meta[meta_mapping[1]]
@@ -190,21 +208,21 @@ def info(meta: np.ndarray,
     Tarr1_raw = meta0[14]
     Tarr2_raw = meta0[15]
 
-    r_info = {
-        'Tmin_C': temperature_LUT_C[Tmin_raw],
-        'Tmin_raw': Tmin_raw,
-        'Tmin_point': (Tmin_x, Tmin_y),
-        'Tmax_C': temperature_LUT_C[Tmax_raw],
-        'Tmax_raw': Tmax_raw,
-        'Tmax_point': (Tmax_x, Tmax_y),
-        'Tcenter_C': temperature_LUT_C[Tcenter_raw],
-        'Tcenter_raw': Tcenter_raw,
-        'Tcenter_point': (int(width / 2), int(height / 2)),
-        'device_strings': device_strings,
-        'device_type': device_strings[3],
-        'date': datetime.now(),
-        'meta': meta
-    }
+    info = Info(
+        Tmin_C=temperature_LUT_C[Tmin_raw],
+        Tmin_raw=Tmin_raw,
+        Tmin_point=(Tmin_x, Tmin_y),
+        Tmax_C=temperature_LUT_C[Tmax_raw],
+        Tmax_raw=Tmax_raw,
+        Tmax_point=(Tmax_x, Tmax_y),
+        Tcenter_C=temperature_LUT_C[Tcenter_raw],
+        Tcenter_raw=Tcenter_raw,
+        Tcenter_point=(int(width / 2), int(height / 2)),
+        device_strings=device_strings,
+        device_type=device_strings[3],
+        date=datetime.now(),
+        meta=meta
+    )
 
     if debug > 1:
         print('meta0 :', meta0.tolist())
@@ -213,15 +231,32 @@ def info(meta: np.ndarray,
         print('meta3 :', meta3.tolist())
 
     if debug > 0:
+        # r_info = {
+        #     'Tmin_C': temperature_LUT_C[Tmin_raw],
+        #     'Tmin_raw': Tmin_raw,
+        #     'Tmin_point': (Tmin_x, Tmin_y),
+        #     'Tmax_C': temperature_LUT_C[Tmax_raw],
+        #     'Tmax_raw': Tmax_raw,
+        #     'Tmax_point': (Tmax_x, Tmax_y),
+        #     'Tcenter_C': temperature_LUT_C[Tcenter_raw],
+        #     'Tcenter_raw': Tcenter_raw,
+        #     'Tcenter_point': (int(width / 2), int(height / 2)),
+        #     'device_strings': device_strings,
+        #     'device_type': device_strings[3],
+        #     'date': datetime.now(),
+        #     'meta': meta
+        # }
         print('fpatmp_:', fpatmp_, Tfpa_raw)
         print('fpaavg_:', fpaavg_)
         print('orgavg_:', orgavg_)
         print('TarrX_raw:', Tarr0_raw, Tarr1_raw, Tarr2_raw)
 
-        for k in r_info:
-            print(k + ':', r_info[k])
+        # for k in asdict(info):
+        #     print(k + ':', r_info[k])
+        for field in fields(info):
+            print(field.name + ':', getattr(info, field.name))
 
-    return r_info, temperature_LUT_C
+    return info, temperature_LUT_C
 
 
 def findString(m3chr: list[int], idx: int) -> tuple[int, str]:
@@ -268,7 +303,7 @@ class T3pro:
     def calibrate(self):
         self.cap.set(cv2.CAP_PROP_ZOOM, 0x8000)
 
-    def info(self) -> tuple[dict, np.ndarray]:
+    def info(self) -> tuple[Info, np.ndarray]:
         width, height = self.frame.shape
         return info(self.meta, self.device_strings, height, width)
 
