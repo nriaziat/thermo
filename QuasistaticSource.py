@@ -2,7 +2,6 @@ import numpy as np
 from scipy.optimize import minimize, curve_fit
 from scipy.special import kn
 import cv2 as cv
-import matplotlib.pyplot as plt
 
 Q = 500  # J / mm^2 ??
 k = 0.49e-3  # W/(mm*K)
@@ -13,32 +12,33 @@ alpha = k / (rho * cp)  # mm^2/s
 a = Q / (2 * np.pi * k)
 b = 1 / (2 * alpha)
 
-x_len = 50
-x_res = 384
+x_len = 50  # mm
+x_res = 384  # pixels
 y_res = 288
-scale = x_len / x_res
-y_len = y_res * scale
+cam_mm_per_px = x_len / x_res  # mm per pixel
+y_len = y_res * cam_mm_per_px
 
 ys = np.linspace(-y_len / 2, y_len / 2, y_res)
 xs = np.linspace(-x_len / 2, x_len / 2, x_res)
 grid = np.meshgrid(xs, ys)
 
+
 def isotherm_width(t_frame: np.array, t_death: float) -> int:
     """
     Calculate the width of the isotherm
-    :param t_frame: Temperature field
-    :param t_death: Isotherm temperature
-    :return: Width of the isotherm
+    :param t_frame: Temperature field [C]
+    :param t_death: Isotherm temperature [C]
+    :return: Width of the isotherm [px]
     """
-    return np.max(np.sum(t_frame > t_death, axis=0)) * scale
+    return np.max(np.sum(t_frame > t_death, axis=0))
 
 
 def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> float:
     """
     Calculate the width of the isotherm using ellipse fitting
-    :param t_frame: Temperature field
-    :param t_death: Isotherm temperature
-    :return: Width of the isotherm
+    :param t_frame: Temperature field [C]
+    :param t_death: Isotherm temperature [C]
+    :return: Width of the isotherm [px]
     """
     binary_frame = (t_frame > t_death).astype(np.uint8)
     binary_frame = cv.medianBlur(binary_frame, 5)
@@ -52,27 +52,29 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> float:
     contours = sorted(contours, key=cv.contourArea, reverse=True)
 
     # ellipse = cv.fitEllipse(contours[0])
-    # if cv.contourArea(contours[0]) < 100:
-    #     return 0
+
     list_of_pts = []
     for ctr in contours:
         list_of_pts += [pt[0] for pt in ctr]
     ctr = np.array(list_of_pts).reshape((-1, 1, 2)).astype(np.int32)
     hull = cv.convexHull(ctr)
+    if hull is None or len(hull) < 5:
+        return 0
     ellipse = cv.fitEllipse(hull)
     w = ellipse[1][0]
-    return w * scale
+    return w
+
 
 def temp_field_prediction(xi, y, u, alph, beta, To) -> np.ndarray:
     """
     Predict the temperature field using the given parameters
-    :param xi: x location relative to the tool
-    :param y: y location relative to the tool
-    :param u: tool speed
+    :param xi: x location relative to the tool [mm]
+    :param y: y location relative to the tool [mm]
+    :param u: tool speed [mm/s]
     :param alph: lumped parameter 1
     :param beta: lumped parameter 2
-    :param To: ambient temperature
-    :return: Predicted temperature field
+    :param To: ambient temperature [C]
+    :return: Predicted temperature field [C]
     """
     if u < 0:
         u = -u
@@ -88,14 +90,14 @@ def predict_v(a_hat, b_hat, v0, v_min, v_max, des_width, To, t_death, grid) -> f
         Compute the optimal tool speed using numerical optimization
         :param a_hat: lumped parameter 1 estimate
         :param b_hat: lumped parameter 2 estimate
-        :param v0: speed guess
-        :param v_min: speed lower bound
-        :param v_max: speed upper bound
-        :param des_width: desired isotherm width in pixels
-        :param To: ambient temperature
-        :param t_death: isotherm temperature
-        :param grid: meshgrid of x, y locations
-        :return: optimal tool speed
+        :param v0: speed guess [mm/s]
+        :param v_min: speed lower bound [mm/s]
+        :param v_max: speed upper bound [mm/s]
+        :param des_width: desired isotherm width [px]
+        :param To: ambient temperature [C]
+        :param t_death: isotherm temperature [C]
+        :param grid: meshgrid of x, y locations [mm]
+        :return: optimal tool speed [mm/s]
         """
     res = minimize(lambda x: (isotherm_width(temp_field_prediction(grid[0], grid[1],
                                                                    u=x, alph=a_hat,
@@ -111,9 +113,9 @@ def predict_v(a_hat, b_hat, v0, v_min, v_max, des_width, To, t_death, grid) -> f
 def estimate_params(v, xdata, ydata, a_hat, b_hat) -> tuple[float, float]:
     """
     Estimate the parameters of the model using curve fitting
-    :param v: tool speed
-    :param xdata: (xi, y) data
-    :param ydata: Temperature data
+    :param v: tool speed [mm/s]
+    :param xdata: (xi, y) data [mm]
+    :param ydata: Temperature data [C]
     :param a_hat: current estimate of a
     :param b_hat: current estimate of b
     :return: a_hat, b_hat, cp_hat
@@ -121,8 +123,9 @@ def estimate_params(v, xdata, ydata, a_hat, b_hat) -> tuple[float, float]:
     if not np.isinf(ydata).any():
         try:
             popt, pvoc = curve_fit(
-                lambda x, ap, bp, cp: temp_field_prediction(x[0], x[1], u=v, alph=ap, beta=bp, To=To) + np.random.normal(0,
-                                                                                                            cp),
+                lambda x, ap, bp, cp: temp_field_prediction(x[0], x[1], u=v, alph=ap, beta=bp,
+                                                            To=To) + np.random.normal(0,
+                                                                                      cp),
                 xdata,
                 ydata,
                 p0=[a_hat, b_hat, 1],
@@ -137,36 +140,39 @@ def estimate_params(v, xdata, ydata, a_hat, b_hat) -> tuple[float, float]:
 
 
 class OnlineVelocityOptimizer:
-
     Kp = 0.02
     Ki = 0.005
     Kd = 0.01
 
     def __init__(self,
+                 des_width,
                  v_min: float = 0.01,
                  v_max: float = 25,
-                 v0: float = 0.1,
-                 des_width: float = 20,
-                 t_death: float = 50):
+                 v0: float = 2,
+                 t_death: float = 50,
+                 use_cv: bool = True):
         """
-        :param v_min: minimum tool speed
-        :param v_max: maximum tool speed
-        :param v0: Starting tool speed
-        :param des_width: Desired Isotherm width in mm
-        :param t_death: Isotherm temperature
+        :param des_width: Desired Isotherm width [px]
+        :param v_min: minimum tool speed [mm/s]
+        :param v_max: maximum tool speed [mm/s]
+        :param v0: Starting tool speed [mm/s]
+        :param t_death: Isotherm temperature [C]
+        :param use_cv: Use OpenCV for isotherm width calculation, otherwise use heuristic measure.
         """
 
         self._v_min = v_min
         self._v_max = v_max
 
-        self.v0 = v0
         self.des_width = des_width
         self.t_death = t_death
 
-        self.v = self.v0
+        self.v = v0
         self._error = 0
         self._last_error = 0
         self._error_sum = 0
+        self._width = 0
+
+        self._cv = use_cv
 
     def update_velocity(self, frame: np.ndarray[float]) -> float:
         """
@@ -176,8 +182,13 @@ class OnlineVelocityOptimizer:
         """
 
         self._last_error = self._error
-        # self._error = isotherm_width(frame, self.t_death) - self.des_width
-        self._error = cv_isotherm_width(frame, self.t_death) - self.des_width
+
+        if not self._cv:
+            self._width = isotherm_width(frame, self.t_death)
+        else:
+            self._width = cv_isotherm_width(frame, self.t_death)
+
+        self._error = self._width - self.des_width
         self._error_sum += self._error
         self.v += self.Kp * self._error + self.Ki * self._error + self.Kd * (self._error - self._last_error)
 
@@ -196,23 +207,48 @@ class OnlineVelocityOptimizer:
 
         return self.v
 
+    def get_loggable_data(self) -> dict:
+        """
+        Get the data that can be logged
+        :return: dictionary of data
+        """
+        return {
+            "v": self.v,
+            "error": self._error,
+            "error_sum": self._error_sum,
+            "width": self._width
+        }
+
 
 if __name__ == "__main__":
-    tool_wd = 5 / scale # px
+
+    import logging
+    import matplotlib.pyplot as plt
+
+    logging.basicConfig(filename=f"log.log",  # "log.log
+                        format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                        datefmt='%H:%M:%S',
+                        level=logging.DEBUG)
+
+    logger = logging.getLogger("qs_test")
+
+    tool_wd = 5 / cam_mm_per_px  # px
     # Example usage
-    optimizer = OnlineVelocityOptimizer()
+    optimizer = OnlineVelocityOptimizer(des_width=20 / cam_mm_per_px)
     for i in range(100):
         frame = temp_field_prediction(grid[0], grid[1], u=-optimizer.v, alph=a, beta=b, To=To)
         # add occlusion
         y, x = frame.shape
-        y_min = int(y//2-tool_wd/2)
-        y_max = int(y//2+tool_wd/2)
-        frame[y_min:y_max, x//2:] = To
+        y_min = int(y // 2 - tool_wd / 2)
+        y_max = int(y // 2 + tool_wd / 2)
+        frame[y_min:y_max, x // 2:] = To
         # add noise
         frame += np.random.normal(0, 5, frame.shape)
         plt.imshow(frame, cmap='hot', interpolation='nearest')
         plt.pause(0.001)
         v = optimizer.update_velocity(frame)
+        logger.debug(optimizer.get_loggable_data())
     plt.imshow(frame, cmap='hot', interpolation='nearest')
     plt.show()
-    print(f"V = {v:.2f} mm/s, Error = {abs(optimizer._error):.2f} mm, Measured width = {cv_isotherm_width(frame, optimizer.t_death):.2f} mm")
+    print(
+        f"V = {v:.2f} mm/s, Error = {abs(optimizer._error):.2f} mm, Measured width = {cv_isotherm_width(frame, optimizer.t_death) * cam_mm_per_px:.2f} mm")

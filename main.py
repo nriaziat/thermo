@@ -4,19 +4,29 @@ from QuasistaticSource import OnlineVelocityOptimizer
 import cv2 as cv
 from T3pro import T3pro
 import matplotlib.pyplot as plt
+import logging
+import time
+
+logging.basicConfig(filename=f"log_{time.time()}.log",
+                    format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                    datefmt='%H:%M:%S',
+                    level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 testbed = Testbed()
 t3 = T3pro()
 
-scale = 0.13  # pixels per mm
+scale = 0.1  # px per mm
 qs = OnlineVelocityOptimizer(des_width=10 / scale)
 
 testbed.home()
 print("Homing...")
 debug = False
 
-video_save = cv.VideoWriter("output.avi", cv.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
-
+video_save = cv.VideoWriter(f"output_{time.time()}.avi", cv.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
+start = False
+input("Press Enter to start: ")
+testbed.set_speed(qs.v)
 while True:
     ret, raw_frame = t3.read()
     info, lut = t3.info()
@@ -25,9 +35,10 @@ while True:
     if not ret:
         continue
 
+    tmax = info.Tmax_C
+    tmin = info.Tmin_C
+    logger.debug(f"Max Temp (C): {tmax}, Min Temp (C): {tmin}")
     if debug:
-        tmax = info.Tmax_C
-        tmin = info.Tmin_C
         thermal_arr = cv.normalize(thermal_arr, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
         hist = cv.calcHist([thermal_arr], [0], None, [256], [0, 256])
         bins = np.arange(tmin, tmax, (tmax - tmin) / 256)
@@ -47,7 +58,8 @@ while True:
 
     try:
         v = qs.update_velocity(thermal_arr)
-        ret = testbed.set_speed(v)
+        # ret = testbed.set_speed(v)
+        logger.debug(qs.get_loggable_data())
         if not ret:
             testbed.stop()
             print("Endstop reached")
