@@ -2,6 +2,7 @@ import numpy as np
 from scipy.optimize import minimize, curve_fit
 from scipy.special import kn
 import cv2 as cv
+import matplotlib.pyplot as plt
 
 Q = 500  # J / mm^2 ??
 k = 0.49e-3  # W/(mm*K)
@@ -12,8 +13,15 @@ alpha = k / (rho * cp)  # mm^2/s
 a = Q / (2 * np.pi * k)
 b = 1 / (2 * alpha)
 
-grid = np.meshgrid(np.linspace(-50, 0, 384), np.linspace(-50, 50, 288))
+x_len = 50
+x_res = 384
+y_res = 288
+scale = x_len / x_res
+y_len = y_res * scale
 
+ys = np.linspace(-y_len / 2, y_len / 2, y_res)
+xs = np.linspace(-x_len / 2, x_len / 2, x_res)
+grid = np.meshgrid(xs, ys)
 
 def isotherm_width(t_frame: np.array, t_death: float) -> int:
     """
@@ -22,7 +30,7 @@ def isotherm_width(t_frame: np.array, t_death: float) -> int:
     :param t_death: Isotherm temperature
     :return: Width of the isotherm
     """
-    return np.max(np.sum(t_frame > t_death, axis=0))
+    return np.max(np.sum(t_frame > t_death, axis=0)) * scale
 
 
 def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> float:
@@ -32,19 +40,28 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> float:
     :param t_death: Isotherm temperature
     :return: Width of the isotherm
     """
-    contours = cv.findContours((t_frame > t_death).astype(np.uint8), cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+    binary_frame = (t_frame > t_death).astype(np.uint8)
+    binary_frame = cv.medianBlur(binary_frame, 5)
+    contours = cv.findContours(binary_frame, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
     if len(contours) > 0:
         contours = contours[0]
-    contours = sorted(contours, key=cv.contourArea, reverse=True)
-    try:
-        ellipse = cv.fitEllipse(contours[0])
-        if cv.contourArea(contours[0]) < 100:
-            return 0
-        w = ellipse[1][0] / 5
-        return w
-    except cv.error:
-        return 0
 
+    # cv.imshow("Contours", cnt_frame)
+    # cv.waitKey(1)
+
+    contours = sorted(contours, key=cv.contourArea, reverse=True)
+
+    # ellipse = cv.fitEllipse(contours[0])
+    # if cv.contourArea(contours[0]) < 100:
+    #     return 0
+    list_of_pts = []
+    for ctr in contours:
+        list_of_pts += [pt[0] for pt in ctr]
+    ctr = np.array(list_of_pts).reshape((-1, 1, 2)).astype(np.int32)
+    hull = cv.convexHull(ctr)
+    ellipse = cv.fitEllipse(hull)
+    w = ellipse[1][0]
+    return w * scale
 
 def temp_field_prediction(xi, y, u, alph, beta, To) -> np.ndarray:
     """
@@ -57,6 +74,9 @@ def temp_field_prediction(xi, y, u, alph, beta, To) -> np.ndarray:
     :param To: ambient temperature
     :return: Predicted temperature field
     """
+    if u < 0:
+        u = -u
+        xi = -xi
     r = np.sqrt(xi ** 2 + y ** 2)
     ans = To + alph * u * np.exp(-beta * xi * u, dtype=np.longfloat) * kn(0, beta * r * u)
     np.nan_to_num(ans, copy=False, nan=To, posinf=np.min(ans), neginf=np.max(ans))
@@ -116,7 +136,7 @@ def estimate_params(v, xdata, ydata, a_hat, b_hat) -> tuple[float, float]:
         return a_hat, b_hat
 
 
-class AdaptiveVelocityController:
+class OnlineVelocityOptimizer:
 
     Kp = 0.02
     Ki = 0.005
@@ -126,13 +146,13 @@ class AdaptiveVelocityController:
                  v_min: float = 0.01,
                  v_max: float = 25,
                  v0: float = 0.1,
-                 des_width: float = 50,
+                 des_width: float = 20,
                  t_death: float = 50):
         """
         :param v_min: minimum tool speed
         :param v_max: maximum tool speed
         :param v0: Starting tool speed
-        :param des_width: Desired Isotherm width in pixels
+        :param des_width: Desired Isotherm width in mm
         :param t_death: Isotherm temperature
         """
 
@@ -156,7 +176,8 @@ class AdaptiveVelocityController:
         """
 
         self._last_error = self._error
-        self._error = isotherm_width(frame, self.t_death) - self.des_width
+        # self._error = isotherm_width(frame, self.t_death) - self.des_width
+        self._error = cv_isotherm_width(frame, self.t_death) - self.des_width
         self._error_sum += self._error
         self.v += self.Kp * self._error + self.Ki * self._error + self.Kd * (self._error - self._last_error)
 
@@ -174,3 +195,24 @@ class AdaptiveVelocityController:
             self._error_sum = 0
 
         return self.v
+
+
+if __name__ == "__main__":
+    tool_wd = 5 / scale # px
+    # Example usage
+    optimizer = OnlineVelocityOptimizer()
+    for i in range(100):
+        frame = temp_field_prediction(grid[0], grid[1], u=-optimizer.v, alph=a, beta=b, To=To)
+        # add occlusion
+        y, x = frame.shape
+        y_min = int(y//2-tool_wd/2)
+        y_max = int(y//2+tool_wd/2)
+        frame[y_min:y_max, x//2:] = To
+        # add noise
+        frame += np.random.normal(0, 5, frame.shape)
+        plt.imshow(frame, cmap='hot', interpolation='nearest')
+        plt.pause(0.001)
+        v = optimizer.update_velocity(frame)
+    plt.imshow(frame, cmap='hot', interpolation='nearest')
+    plt.show()
+    print(f"V = {v:.2f} mm/s, Error = {abs(optimizer._error):.2f} mm, Measured width = {cv_isotherm_width(frame, optimizer.t_death):.2f} mm")

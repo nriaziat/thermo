@@ -1,6 +1,6 @@
 import numpy as np
 from testbed import Testbed
-from QuasistaticSource import AdaptiveVelocityController
+from QuasistaticSource import OnlineVelocityOptimizer
 import cv2 as cv
 from T3pro import T3pro
 import matplotlib.pyplot as plt
@@ -9,7 +9,7 @@ testbed = Testbed()
 t3 = T3pro()
 
 scale = 0.13  # pixels per mm
-qs = AdaptiveVelocityController(des_width=10 / scale)
+qs = OnlineVelocityOptimizer(des_width=10 / scale)
 
 testbed.home()
 print("Homing...")

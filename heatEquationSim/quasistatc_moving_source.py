@@ -37,7 +37,7 @@ scale = x_len / x_res
 y_len = y_res * scale
 
 ys = np.linspace(-y_len / 2, y_len / 2, y_res)
-xs = np.linspace(-x_len, 0, x_res)
+xs = np.linspace(-x_len / 2, x_len / 2, x_res)
 grid = np.meshgrid(xs, ys)
 
 
@@ -162,11 +162,11 @@ for i in range(1000):
         if np.sign(errors[-1]) != np.sign(errors[-2]):
             error_sum = 0
 
-    # p1 = plt.imshow(plate, cmap='hot', interpolation='nearest')
+    p1 = plt.imshow(plate, cmap='hot', interpolation='nearest')
     # plt.imshow(total_plate[:, :x0+x_res], cmap='hot', interpolation='nearest')
     # plt.clf()
     # plt.contourf(grid[0], grid[1], plate, levels=[23, 50, 100], cmap='hot')
-    # plt.pause(0.001)
+    plt.pause(0.001)
 
 total_plate = total_plate[:, :x0 + x_res]
 plt.imshow(total_plate, cmap='hot', interpolation='nearest')
