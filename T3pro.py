@@ -146,7 +146,8 @@ def temperatureLut(fpatmp_: float, meta3: np.ndarray) -> np.ndarray:
     flt_10003394 = f32(m3, 22)
     readParaFromDevFlag = True
     if readParaFromDevFlag:
-        if debug > 0: print('m3:', m3[127 * 2:127 * 2 + 30])
+        if debug > 0:
+            print('m3:', m3[127 * 2:127 * 2 + 30])
         Fix_ = f32(m3, 127 * 2)
         refltmp_ = f32(m3, 127 * 2 + 4)
         airtmp_ = f32(m3, 127 * 2 + 8)
@@ -303,7 +304,7 @@ class T3pro:
     def calibrate(self):
         self.cap.set(cv2.CAP_PROP_ZOOM, 0x8000)
 
-    def info(self) -> tuple[Info, np.ndarray]:
+    def info(self) -> tuple[Info, np.ndarray[float]]:
         width, height = self.frame.shape
         return info(self.meta, self.device_strings, height, width)
 

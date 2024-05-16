@@ -30,7 +30,7 @@ testbed.set_speed(qs.v)
 while True:
     ret, raw_frame = t3.read()
     info, lut = t3.info()
-    thermal_arr = np.array(lut[raw_frame])
+    thermal_arr = lut[raw_frame]
 
     if not ret:
         continue
