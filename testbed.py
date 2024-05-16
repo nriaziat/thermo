@@ -1,32 +1,73 @@
+import time
 import serial
 import numpy as np
+from enum import Enum, auto
+from dataclasses import dataclass
+
+
+class TestbedCommandType(Enum):
+    HOME = "?H"
+    POSITION = "?P"
+    SPEED = auto()
+
+    def __len__(self):
+        return len(self.value)
+
+
+class TestbedResponse(Enum):
+    HOMED = "homed"
+    LEFT = "left"
+    RIGHT = "right"
+    ERROR = "-1"
+    HOMING = "homing"
+    NONE = ""
+
+
+@dataclass
+class TestbedCommand:
+    type: TestbedCommandType
+    speed: float | None = None
 
 
 class Testbed:
     """
     Class to interface with the testbed. The testbed is a linear actuator that moves the camera and tool in the x-axis.
     """
+
     def __init__(self, port="/dev/ttyACM0"):
         """
         :param port: The serial port to connect to the testbed. Baud rate is 115200.
         """
-        self.ser = serial.Serial(port, 115200)
+        self.ser: serial.Serial = serial.Serial(port, 115200, timeout=1)
 
-    def __send_serial_command(self, command: str) -> bool:
+    def __send_serial_command(self, command: TestbedCommand) -> bool:
         """
         Send a command to the testbed.
-        :param command: str
+        :param command: TestbedCommand - The command to send.
         :return: bool - True if the command was sent successfully.
         """
-        self.ser.write(f'{command}\n'.encode())
-        return True
+        if command.type == TestbedCommandType.SPEED:
+            msg = f'{command.speed}\n'.encode()
+        else:
+            msg = f'{command.type.value}\n'.encode()
+        return self.ser.write(msg) == len(msg)
 
     def home(self) -> bool:
         """
         Home the testbed to the far left.
-        :return: True if command sent succesfully.
+        :return: True if command sent successfully.
         """
-        self.__send_serial_command('-1')
+        self.__send_serial_command(TestbedCommand(TestbedCommandType.HOME))
+        while (response := self.__read_serial()) != TestbedResponse.HOMING:
+            if response == TestbedResponse.ERROR:
+                return False
+            time.sleep(0.1)
+            self.ser.reset_output_buffer()
+            self.__send_serial_command(TestbedCommand(TestbedCommandType.HOME))
+        while (response := self.__read_serial()) != TestbedResponse.HOMED:
+            if response == TestbedResponse.ERROR:
+                return False
+            time.sleep(1)
         return True
 
     def get_position(self) -> float:
@@ -34,11 +75,14 @@ class Testbed:
         Get the current position of the testbed.
         :return: float - The position of the testbed in mm.
         """
-        self.__send_serial_command('-2')
+        ret = self.__send_serial_command(TestbedCommand(TestbedCommandType.POSITION))
         data = self.__read_serial()
-        if data == -1:
-            return -1
-        return float(data)
+        try:
+            response = TestbedResponse(data)
+            if response == TestbedResponse.ERROR:
+                return -1
+        except ValueError:
+            return float(data)
 
     def set_speed(self, speed: float) -> bool:
         """
@@ -46,15 +90,22 @@ class Testbed:
         :param speed: speed in mm/s
         :return: True if the speed was set successfully.
         """
-        self.__send_serial_command(f'{speed:.4f}')
+        ret = self.__send_serial_command(TestbedCommand(TestbedCommandType.SPEED, speed))
+        if not ret:
+            return False
         data = self.__read_serial()
-        if data == -1:
+        if data is float:
+            if not np.isclose(data, speed, atol=0.01):
+                return False
+            return True
+        if data == TestbedResponse.ERROR:
             self.stop()
             return False
-        conf = float(data)
-        if not np.isclose(conf, speed, atol=0.01):
+        elif data == TestbedResponse.HOMING or data == TestbedResponse.HOMED:
             return False
-        return True
+        elif data == TestbedResponse.LEFT or data == TestbedResponse.RIGHT:
+            self.stop()
+            return False
 
     def stop(self) -> bool:
         """
@@ -63,13 +114,18 @@ class Testbed:
         """
         return self.set_speed(0)
 
-    def __read_serial(self) -> str or int:
+    def __read_serial(self) -> float | TestbedResponse:
         """
         Read the serial port.
-        :return: str or int - The data read from the serial port.
+        :return: str - The data read from the serial port.
         """
+        if not self.ser.in_waiting:
+            return TestbedResponse.NONE
         data = self.ser.readline().decode().strip().lower()
-        if data == "left" or data == "right":
-            print("Endstop reached")
-            return -1
-        return data
+        try:
+            return TestbedResponse(data)
+        except ValueError:
+            try:
+                return float(data)
+            except ValueError:
+                return -1

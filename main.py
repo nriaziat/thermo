@@ -5,32 +5,38 @@ import cv2 as cv
 from T3pro import T3pro
 import matplotlib.pyplot as plt
 import logging
-import time
+import datetime
+import pickle as pkl
 
-logging.basicConfig(filename=f"log_{time.time()}.log",
+date = datetime.datetime.now()
+
+logging.basicConfig(filename=f"logs/log_{date.strftime('%Y-%m-%d-%H:%M')}.log",
                     format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
                     datefmt='%H:%M:%S',
                     level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("main")
 
 testbed = Testbed()
 t3 = T3pro()
 
-scale = 0.1  # px per mm
+scale = 5.1337 # px per mm
 qs = OnlineVelocityOptimizer(des_width=10 / scale)
-
-testbed.home()
-print("Homing...")
 debug = False
+testbed.home()
+input("Press Enter to start the testbed: ")
 
-video_save = cv.VideoWriter(f"output_{time.time()}.avi", cv.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
+video_save = cv.VideoWriter(f"logs/output_{date.strftime('%Y-%m-%d-%H:%M')}.avi", cv.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
 start = False
-input("Press Enter to start: ")
+
 testbed.set_speed(qs.v)
+cm = plt.get_cmap('hot')
+
+temp_arrays = []
 while True:
     ret, raw_frame = t3.read()
     info, lut = t3.info()
     thermal_arr = lut[raw_frame]
+    temp_arrays.append(thermal_arr)
 
     if not ret:
         continue
@@ -47,6 +53,7 @@ while True:
         plt.cla()
 
     frame = cv.applyColorMap(raw_frame.astype(np.uint8), cv.COLORMAP_HOT)
+    # frame = cm(raw_frame)
     video_save.write(frame)
     cv.imshow("Frame", frame)
     key = cv.waitKey(1) & 0xFF
@@ -79,5 +86,6 @@ while True:
         print(e)
         exit()
 
+pkl.dump(temp_arrays, open(f"logs/temp_{date.strftime('%Y-%m-%d-%H:%M')}.pkl", "wb"))
 video_save.release()
 t3.release()

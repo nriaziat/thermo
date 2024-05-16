@@ -59,10 +59,10 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> float:
     ctr = np.array(list_of_pts).reshape((-1, 1, 2)).astype(np.int32)
     hull = cv.convexHull(ctr)
     if hull is None or len(hull) < 5:
-        return 0
+        return 0, None
     ellipse = cv.fitEllipse(hull)
     w = ellipse[1][0]
-    return w
+    return w, ellipse
 
 
 def temp_field_prediction(xi, y, u, alph, beta, To) -> np.ndarray:
@@ -174,19 +174,20 @@ class OnlineVelocityOptimizer:
 
         self._cv = use_cv
 
-    def update_velocity(self, frame: np.ndarray[float]) -> float:
+    def update_velocity(self, frame: np.ndarray[float]) -> any:
         """
         Update the tool speed based on the current frame
         :param frame: Temperature field from the camera. If None, the field will be predicted using the current model
-        :return: new tool speed
+        :return: new tool speed, ellipse of the isotherm if using CV
         """
 
         self._last_error = self._error
 
+        ellipse = None
         if not self._cv:
             self._width = isotherm_width(frame, self.t_death)
         else:
-            self._width = cv_isotherm_width(frame, self.t_death)
+            self._width, ellipse = cv_isotherm_width(frame, self.t_death)
 
         self._error = self._width - self.des_width
         self._error_sum += self._error
@@ -205,7 +206,7 @@ class OnlineVelocityOptimizer:
         if np.sign(self._error) != np.sign(self._last_error):
             self._error_sum = 0
 
-        return self.v
+        return self.v, ellipse
 
     def get_loggable_data(self) -> dict:
         """
@@ -221,6 +222,7 @@ class OnlineVelocityOptimizer:
 
 
 if __name__ == "__main__":
+    print("Running QuasiStaticSource.py in Simulation Mode.")
 
     import logging
     import matplotlib.pyplot as plt
