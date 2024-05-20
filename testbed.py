@@ -8,7 +8,7 @@ from dataclasses import dataclass
 class TestbedCommandType(Enum):
     HOME = "?H"
     POSITION = "?P"
-    SPEED = auto()
+    SPEED = "?S"
 
     def __len__(self):
         return len(self.value)
@@ -96,16 +96,21 @@ class Testbed:
         data = self.__read_serial()
         if data is float:
             if not np.isclose(data, speed, atol=0.01):
+                print(f"Speed not set correctly. Expected: {speed}, Got: {data}")
                 return False
             return True
         if data == TestbedResponse.ERROR:
+            print("Error setting speed")
             self.stop()
             return False
-        elif data == TestbedResponse.HOMING or data == TestbedResponse.HOMED:
+        elif data == TestbedResponse.HOMING:
+            print("Testbed state: ", data)
             return False
         elif data == TestbedResponse.LEFT or data == TestbedResponse.RIGHT:
+            print("Endstop reached")
             self.stop()
             return False
+        return True
 
     def stop(self) -> bool:
         """

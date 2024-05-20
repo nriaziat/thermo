@@ -2,6 +2,8 @@ import numpy as np
 from scipy.optimize import minimize, curve_fit
 from scipy.special import kn
 import cv2 as cv
+from filterpy.kalman import KalmanFilter
+from filterpy.common import Q_discrete_white_noise
 
 Q = 500  # J / mm^2 ??
 k = 0.49e-3  # W/(mm*K)
@@ -33,12 +35,12 @@ def isotherm_width(t_frame: np.array, t_death: float) -> int:
     return np.max(np.sum(t_frame > t_death, axis=0))
 
 
-def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> float:
+def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> (float, tuple | None):
     """
     Calculate the width of the isotherm using ellipse fitting
     :param t_frame: Temperature field [C]
     :param t_death: Isotherm temperature [C]
-    :return: Width of the isotherm [px]
+    :return: Width of the isotherm [px] and the ellipse
     """
     binary_frame = (t_frame > t_death).astype(np.uint8)
     binary_frame = cv.medianBlur(binary_frame, 5)
@@ -49,13 +51,14 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> float:
     # cv.imshow("Contours", cnt_frame)
     # cv.waitKey(1)
 
-    contours = sorted(contours, key=cv.contourArea, reverse=True)
+    # contours = sorted(contours, key=cv.contourArea, reverse=True)
 
     # ellipse = cv.fitEllipse(contours[0])
 
     list_of_pts = []
     for ctr in contours:
-        list_of_pts += [pt[0] for pt in ctr]
+        if cv.contourArea(ctr) > 200:
+            list_of_pts += [pt[0] for pt in ctr]
     ctr = np.array(list_of_pts).reshape((-1, 1, 2)).astype(np.int32)
     hull = cv.convexHull(ctr)
     if hull is None or len(hull) < 5:
@@ -140,15 +143,15 @@ def estimate_params(v, xdata, ydata, a_hat, b_hat) -> tuple[float, float]:
 
 
 class OnlineVelocityOptimizer:
-    Kp = 0.02
-    Ki = 0.005
-    Kd = 0.01
+    Kp = 0.1
+    Ki = 0.001
+    Kd = 0.03
 
     def __init__(self,
                  des_width,
-                 v_min: float = 0.01,
-                 v_max: float = 25,
-                 v0: float = 2,
+                 v_min: float = 0.5,
+                 v_max: float = 10,
+                 v0: float = 0.5,
                  t_death: float = 50,
                  use_cv: bool = True):
         """
@@ -170,13 +173,22 @@ class OnlineVelocityOptimizer:
         self._error = 0
         self._last_error = 0
         self._error_sum = 0
-        self._width = 0
+        self.width = 0
+
+        self._kf = KalmanFilter(dim_x=2, dim_z=1)
+        self._kf.x = np.array([self.width, 0])
+        self._kf.F = np.array([[1, 1], [0, 1]])
+        self._kf.H = np.array([[1, 0]])
+        self._kf.P *= 10
+        self._kf.R = 1
+        self._kf.Q = Q_discrete_white_noise(dim=2, dt=0.05, var=50)
 
         self._cv = use_cv
 
-    def update_velocity(self, frame: np.ndarray[float]) -> any:
+    def update_velocity(self, v: float, frame: np.ndarray[float]) -> any:
         """
         Update the tool speed based on the current frame
+        :param v: Current tool speed
         :param frame: Temperature field from the camera. If None, the field will be predicted using the current model
         :return: new tool speed, ellipse of the isotherm if using CV
         """
@@ -185,13 +197,19 @@ class OnlineVelocityOptimizer:
 
         ellipse = None
         if not self._cv:
-            self._width = isotherm_width(frame, self.t_death)
+            z = isotherm_width(frame, self.t_death)
         else:
-            self._width, ellipse = cv_isotherm_width(frame, self.t_death)
+            z, ellipse = cv_isotherm_width(frame, self.t_death)
 
-        self._error = self._width - self.des_width
+        self._kf.predict()
+        self._kf.update(z)
+        self.width = self._kf.x[0]
+        self.width = self.width if self.width > 0 else 0
+        dwidth = self._kf.x[1]
+
+        self._error = self.width - self.des_width
         self._error_sum += self._error
-        self.v += self.Kp * self._error + self.Ki * self._error + self.Kd * (self._error - self._last_error)
+        self.v = v + self.Kp * self._error + self.Ki * self._error - self.Kd * dwidth
 
         if self.v < self._v_min:
             self.v = self._v_min
@@ -217,7 +235,7 @@ class OnlineVelocityOptimizer:
             "v": self.v,
             "error": self._error,
             "error_sum": self._error_sum,
-            "width": self._width
+            "width": self.width
         }
 
 
