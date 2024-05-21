@@ -49,7 +49,9 @@ while True:
 
     tmax = info.Tmax_C
     tmin = info.Tmin_C
-    logger.debug(f"Max Temp (C): {tmax}, Min Temp (C): {tmin}")
+    tmax_loc = info.Tmax_point
+    tmin_loc = info.Tmin_point
+    logger.debug(f"Max Temp (C): {tmax}, Min Temp (C): {tmin}, Max Temp Location: {tmax_loc}, Min Temp Location: {tmin_loc}")
     if debug:
         thermal_arr = cv.normalize(thermal_arr, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
         hist = cv.calcHist([thermal_arr], [0], None, [256], [0, 256])

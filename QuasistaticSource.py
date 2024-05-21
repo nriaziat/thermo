@@ -142,6 +142,15 @@ def estimate_params(v, xdata, ydata, a_hat, b_hat) -> tuple[float, float]:
         return a_hat, b_hat
 
 
+def find_tooltip(therm_frame: np.ndarray) -> tuple[int, int]:
+    """
+    Find the location of the tooltip
+    :param therm_frame: Temperature field [C]
+    :return: x, y location of the tooltip [px]
+    """
+    return np.unravel_index(np.argmax(therm_frame), therm_frame.shape)
+
+
 class OnlineVelocityOptimizer:
     Kp = 0.1
     Ki = 0.001
@@ -175,15 +184,48 @@ class OnlineVelocityOptimizer:
         self._error_sum = 0
         self.width = 0
 
-        self._kf = KalmanFilter(dim_x=2, dim_z=1)
-        self._kf.x = np.array([self.width, 0])
-        self._kf.F = np.array([[1, 1], [0, 1]])
-        self._kf.H = np.array([[1, 0]])
-        self._kf.P *= 10
-        self._kf.R = 1
-        self._kf.Q = Q_discrete_white_noise(dim=2, dt=0.05, var=50)
+        self._width_kf = KalmanFilter(dim_x=2, dim_z=1)
+        self._width_kf.x = np.array([self.width, 0])
+        self._width_kf.F = np.array([[1, 1], [0, 1]])
+        self._width_kf.H = np.array([[1, 0]])
+        self._width_kf.P *= 10
+        self._width_kf.R = 1
+        self._width_kf.Q = Q_discrete_white_noise(dim=2, dt=0.05, var=50)
+
+        self._pos_kf_init = False
+        self._pos_init = None
+        self._deflection = 0
+        self._pos_kf = KalmanFilter(dim_x=4, dim_z=2)
+        self._pos_kf.x = np.array([0, 0, 0, 0])
+        self._pos_kf.F = np.array([[1, 1, 0, 0],
+                                   [0, 1, 0, 0],
+                                   [0, 0, 1, 1],
+                                   [0, 0, 0, 1]])
+        self._pos_kf.H = np.array([[1, 0, 0, 0],
+                                   [0, 0, 1, 0]])
+        self._pos_kf.P *= 1
+        self._pos_kf.R = np.array([[0.1, 0],
+                                   [0, 0.1]])
+        self._pos_kf.Q = Q_discrete_white_noise(dim=4, dt=0.05, var=1)
 
         self._cv = use_cv
+
+    def update_tool_deflection(self, frame: np.ndarray[float]) -> float:
+        """
+        Update the tool deflection based on the current frame
+        :param frame: Temperature field from the camera.
+        :return: deflection [px]
+        """
+        tool_tip = find_tooltip(frame)
+        if not self._pos_kf_init:
+            self._pos_kf.x = np.array([tool_tip[0], 0, tool_tip[1], 0])
+            self._pos_kf_init = True
+            self._pos_init = tool_tip
+        self._pos_kf.predict()
+        self._pos_kf.update(tool_tip)
+        tool_tip = self._pos_kf.x[0], self._pos_kf.x[2]
+        deflection = np.linalg.norm(np.array(tool_tip) - np.array(self._pos_init))
+        return deflection
 
     def update_velocity(self, v: float, frame: np.ndarray[float]) -> any:
         """
@@ -195,21 +237,23 @@ class OnlineVelocityOptimizer:
 
         self._last_error = self._error
 
+        self._deflection = self.update_tool_deflection(frame)
+
         ellipse = None
         if not self._cv:
             z = isotherm_width(frame, self.t_death)
         else:
             z, ellipse = cv_isotherm_width(frame, self.t_death)
 
-        self._kf.predict()
-        self._kf.update(z)
-        self.width = self._kf.x[0]
+        self._width_kf.predict()
+        self._width_kf.update(z)
+        self.width = self._width_kf.x[0]
         self.width = self.width if self.width > 0 else 0
-        dwidth = self._kf.x[1]
+        dwidth = self._width_kf.x[1]
 
         self._error = self.width - self.des_width
         self._error_sum += self._error
-        self.v = v + self.Kp * self._error + self.Ki * self._error - self.Kd * dwidth
+        self.v = v + self.Kp * self._error + self.Ki * self._error - self.Kd * dwidth -
 
         if self.v < self._v_min:
             self.v = self._v_min
