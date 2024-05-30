@@ -286,8 +286,8 @@ class T3pro:
     FRAME_WIDTH = FRAME_RAW_WIDTH
     FRAME_HEIGHT = FRAME_RAW_HEIGHT - 4
 
-    def __init__(self):
-        self.cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+    def __init__(self, port: int = 0):
+        self.cap = cv2.VideoCapture(port, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
         self.cap.set(cv2.CAP_PROP_ZOOM, 0x8004)
         self.frame_raw = None
