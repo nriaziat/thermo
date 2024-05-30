@@ -21,10 +21,21 @@ testbed = Testbed()
 t3 = T3pro()
 
 scale = 5.1337  # px per mm
-qs = OnlineVelocityOptimizer(des_width=3 * scale)
+qs = OnlineVelocityOptimizer(des_width=2 * scale)
 debug = False
-testbed.home()
-input("Press Enter to start the testbed: ")
+home_input = input("Press Enter to home the testbed or 's' to skip: ")
+
+if home_input != 's':
+    print("Homing testbed...")
+    testbed.home()
+    print("Testbed homed.")
+else:
+    print("Skipping homing.")
+
+start_input = input("Press Enter to start the experiment or 'q' to quit: ")
+if start_input == 'q':
+    testbed.stop()
+    exit(0)
 
 # video_save = cv.VideoWriter(f"logs/output_{date.strftime('%Y-%m-%d-%H:%M')}.avi", cv.VideoWriter.fourcc(*'XVID'), 30,
 #                             (384, 288))
@@ -38,6 +49,7 @@ temp_arrays = []
 widths = []
 vs = []
 xs = []
+ds = []
 while True:
     ret, raw_frame = t3.read()
     info, lut = t3.info()
@@ -51,7 +63,8 @@ while True:
     tmin = info.Tmin_C
     tmax_loc = info.Tmax_point
     tmin_loc = info.Tmin_point
-    logger.debug(f"Max Temp (C): {tmax}, Min Temp (C): {tmin}, Max Temp Location: {tmax_loc}, Min Temp Location: {tmin_loc}")
+    logger.debug(
+        f"Max Temp (C): {tmax}, Min Temp (C): {tmin}, Max Temp Location: {tmax_loc}, Min Temp Location: {tmin_loc}")
     if debug:
         thermal_arr = cv.normalize(thermal_arr, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
         hist = cv.calcHist([thermal_arr], [0], None, [256], [0, 256])
@@ -61,7 +74,7 @@ while True:
         plt.cla()
 
     # frame = cv.applyColorMap(thermal_arr.astype(np.uint8), cmapy.cmap('hot'))
-    cv.imshow("Frame", 255*(thermal_arr>50).astype(np.uint8))
+    cv.imshow("Frame", 255 * (thermal_arr > 50).astype(np.uint8))
     # video_save.write(frame)
     key = cv.waitKey(1) & 0xFF
     if key == ord('q'):
@@ -74,7 +87,8 @@ while True:
     vs.append(v)
     widths.append(qs.width / scale)
     xs.append(testbed.get_position())
-    print(f"v: {v:.2f} mm/s, Width: {qs.width / scale:.2f} mm")
+    ds.append(qs._deflection / scale)
+    print(f"v: {v:.2f} mm/s, Width: {qs.width / scale:.2f} mm, Deflection: {qs._deflection/scale:.2f} mm")
     ret = testbed.set_speed(v)
     logger.debug(qs.get_loggable_data())
     if not ret:
@@ -92,8 +106,17 @@ pkl.dump(temp_arrays, open(f"logs/temp_{date.strftime('%Y-%m-%d-%H:%M')}.pkl", "
 t3.release()
 print(f"Avg Width: {np.mean(widths):.2f} mm")
 print(f"Avg Velocity: {np.mean(vs):.2f} mm/s")
-plt.plot(xs, widths)
-plt.title("Width vs position")
-plt.xlabel("X (mm)")
-plt.ylabel("Width (mm)")
+fig, axs = plt.subplots(nrows=3, ncols=1)
+axs[0].plot(xs, widths)
+axs[0].set_title("Width vs Position")
+axs[0].set_xlabel("Position (mm)")
+axs[0].set_ylabel("Width (mm)")
+axs[1].plot(xs, vs)
+axs[1].set_title("Velocity vs Position")
+axs[1].set_xlabel("Position (mm)")
+axs[1].set_ylabel("Velocity (mm/s)")
+axs[2].plot(xs, ds)
+axs[2].set_title("Deflection vs Position")
+axs[2].set_xlabel("Position (mm)")
+axs[2].set_ylabel("Deflection (mm)")
 plt.show()

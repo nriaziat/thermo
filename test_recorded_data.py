@@ -40,6 +40,8 @@ kf.Q = np.array([[0.001, 0, 0, 0],
                     [0, 0, 0, 0.001]])
 deflection= None
 
+ovo = OnlineVelocityOptimizer()
+new_v = None
 
 for i, (line, therm_frame) in enumerate(zip(log_lines, therm_images)):
 
@@ -52,13 +54,18 @@ for i, (line, therm_frame) in enumerate(zip(log_lines, therm_images)):
     time = line.split('main')[0].strip()
     tj = datetime.strptime(time, "%H:%M:%S,%f")
     v = data['v']
+    # if new_v is None:
+    #     new_v = v
     w = data['width'] / scale
 
+    new_v, _ = ovo.update_velocity(v, therm_frame)
 
     frame = 255 * (therm_frame > 50).astype(np.uint8)
     color_frame = cv2.applyColorMap(therm_frame.astype(np.uint8), cmapy.cmap('hot'))
     cv2.putText(color_frame, f"v: {v:.2f} mm/s", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     cv2.putText(color_frame, f"width: {w:.2f} mm", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.putText(color_frame, f"new_v: {new_v:.2f} mm/s", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
     if starting_x is None and (therm_frame > 2*therm_frame.mean()).any():
         starting_x = np.array(np.unravel_index(np.argmax(therm_frame), therm_frame.shape))
         kf.x = np.array([starting_x[1], 0, starting_x[0], 0])
@@ -70,11 +77,11 @@ for i, (line, therm_frame) in enumerate(zip(log_lines, therm_images)):
         hot_point = int(kf.x[0]), int(kf.x[2])
         deflection = np.linalg.norm(hot_point - starting_x) / scale
         cv2.putText(color_frame, f"Deflection: {deflection:.2f} mm", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.arrowedLine(color_frame, (starting_x[1], starting_x[0]), (hot_point[1], hot_point[0]), (255, 255, 255), 2)
+        # cv2.arrowedLine(color_frame, (starting_x[1], starting_x[0]), (hot_point[1], hot_point[0]), (255, 255, 255), 2)
 
     df.loc[i] = [tj, v, w, deflection]
     cv2.imshow("Frame", color_frame)
-    key = cv2.waitKey(5) & 0xFF
+    key = cv2.waitKey(20) & 0xFF
     if key == ord('q'):
         break
     video_save.write(color_frame)

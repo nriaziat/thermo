@@ -104,7 +104,7 @@ class Testbed:
             self.stop()
             return False
         elif data == TestbedResponse.HOMING:
-            print("Testbed state: ", data)
+            # print("Testbed state: ", data)
             return False
         elif data == TestbedResponse.LEFT or data == TestbedResponse.RIGHT:
             print("Endstop reached")
