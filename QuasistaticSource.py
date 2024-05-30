@@ -218,16 +218,16 @@ class OnlineVelocityOptimizer:
                                    [0, 15]])
         self._pos_kf.Q = Q_discrete_white_noise(dim=4, dt=0.05, var=5)
 
-    def update_tool_deflection(self, frame: np.ndarray[float]) -> float:
+    def update_tool_deflection(self, frame: np.ndarray[float]) -> tuple[float, float]:
         """
         Update the tool deflection based on the current frame
         :param frame: Temperature field from the camera.
-        :return: deflection [px]
+        :return: deflection [px], deflection rate [px/s]
         """
         tool_tip = find_tooltip(frame, self.t_death)
         if tool_tip is None:
             self._pos_kf_init = False
-            return 0
+            return 0, 0
         if not self._pos_kf_init:
             self.init_pos_kf(tool_tip)
             self._pos_kf_init = True
@@ -235,8 +235,9 @@ class OnlineVelocityOptimizer:
         self._pos_kf.predict()
         self._pos_kf.update(tool_tip)
         tool_tip = self._pos_kf.x[0], self._pos_kf.x[2]
-        deflection = np.linalg.norm(np.array(tool_tip) - np.array(self._pos_init))
-        return deflection
+        deflection = np.array(tool_tip) - np.array(self._pos_init)
+        ddeflection = np.array([self._pos_kf.x[1], self._pos_kf.x[3]])
+        return np.linalg.norm(deflection), np.linalg.norm(ddeflection) * np.sign(np.dot(deflection, ddeflection))
 
     def update_velocity(self, v: float, frame: np.ndarray[float]) -> any:
         """
@@ -248,7 +249,7 @@ class OnlineVelocityOptimizer:
 
         self._last_error = self._error
 
-        self._deflection = self.update_tool_deflection(frame)
+        self._deflection, ddeflection = self.update_tool_deflection(frame)
 
         ellipse = None
         if not self._cv:
@@ -265,7 +266,7 @@ class OnlineVelocityOptimizer:
 
         # self._error = self.width - self.des_width
         self._error_sum += self._error
-        self.v = v + self.Kp * self._error + self.Ki * self._error - self.Kd * dwidth
+        self.v = v + self.Kp * self._error + self.Ki * self._error - self.Kd * (dwidth - 1.75 * ddeflection)
 
         if self.v < self._v_min:
             self.v = self._v_min
