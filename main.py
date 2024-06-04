@@ -50,8 +50,21 @@ widths = []
 vs = []
 xs = []
 ds = []
+
+try:
+    with open("thermal_calibration.pkl", "rb") as f:
+        mtx, dist = pkl.load(f)
+except FileNotFoundError:
+    mtx, dist = None, None
+
 while True:
     ret, raw_frame = t3.read()
+    if mtx is not None:
+        h, w = raw_frame.shape[:2]
+        newcameramtx, roi = cv.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
+        raw_frame = cv.undistort(raw_frame, mtx, dist, None, newcameramtx)
+        x, y, w, h = roi
+        raw_frame = raw_frame[y:y + h, x:x + w]
     info, lut = t3.info()
     thermal_arr = lut[raw_frame]
     temp_arrays.append(thermal_arr)

@@ -202,6 +202,8 @@ class OnlineVelocityOptimizer:
         self._deflection = 0
         self._pos_kf = None
 
+        self._tool_stiffness = 0.8705 # N/mm
+
         self._cv = use_cv
 
     def init_pos_kf(self, pos: tuple):
@@ -250,6 +252,8 @@ class OnlineVelocityOptimizer:
         self._last_error = self._error
 
         self._deflection, ddeflection = self.update_tool_deflection(frame)
+        f = self._tool_stiffness * self._deflection
+        df = self._tool_stiffness * ddeflection
 
         ellipse = None
         if not self._cv:
@@ -260,13 +264,13 @@ class OnlineVelocityOptimizer:
         self._width_kf.predict()
         self._width_kf.update(z)
         self.width = self._width_kf.x[0]
-        self._error = (self.width - self.des_width) - 1.75 * self._deflection
+        self._error = (self.width - self.des_width) - 1.75 * f
 
         dwidth = self._width_kf.x[1]
 
         # self._error = self.width - self.des_width
         self._error_sum += self._error
-        self.v = v + self.Kp * self._error + self.Ki * self._error - self.Kd * (dwidth - 1.75 * ddeflection)
+        self.v = v + self.Kp * self._error + self.Ki * self._error - self.Kd * (dwidth - 1.75 * df)
 
         if self.v < self._v_min:
             self.v = self._v_min
@@ -293,7 +297,7 @@ class OnlineVelocityOptimizer:
             "error": self._error,
             "error_sum": self._error_sum,
             "width": self.width,
-            "deflection": self._deflection,
+            "force": self._tool_stiffness * self._deflection,
         }
 
 

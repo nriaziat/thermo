@@ -9,6 +9,8 @@ class TestbedCommandType(Enum):
     HOME = "?H"
     POSITION = "?P"
     SPEED = "?S"
+    ABS_POS = "!P"
+    INC_POS = "!IP"
 
     def __len__(self):
         return len(self.value)
@@ -26,7 +28,7 @@ class TestbedResponse(Enum):
 @dataclass
 class TestbedCommand:
     type: TestbedCommandType
-    speed: float | None = None
+    value: float | None = None
 
 
 class Testbed:
@@ -47,7 +49,9 @@ class Testbed:
         :return: bool - True if the command was sent successfully.
         """
         if command.type == TestbedCommandType.SPEED:
-            msg = f'{command.speed}\n'.encode()
+            msg = f'{command.value}\n'.encode()
+        elif command.type == TestbedCommandType.ABS_POS or command.type == TestbedCommandType.INC_POS:
+            msg = f'{command.type.value}{command.value}\n'.encode()
         else:
             msg = f'{command.type.value}\n'.encode()
         return self.ser.write(msg) == len(msg)
