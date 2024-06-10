@@ -334,3 +334,19 @@ class T3pro:
 
     def release(self):
         self.cap.release()
+
+
+if __name__ == "__main__":
+    writer = cv2.VideoWriter('output.avi', cv2.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
+    with T3pro() as t3:
+        while True:
+            ret, frame = t3.read()
+            if ret:
+                frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                frame = cv2.applyColorMap(frame, cv2.COLORMAP_JET)
+                writer.write(frame)
+                cv2.imshow('frame', frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+    writer.release()
