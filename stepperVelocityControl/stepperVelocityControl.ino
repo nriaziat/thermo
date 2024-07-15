@@ -11,109 +11,125 @@ const byte right_stop_pin = 3;
 const byte LED_pin = 13;
 const float reset_dist = 1;
 const float max_speed = 55;
-const float home_speed = max_speed;
+const float home_speed = 0.5 * max_speed;
 volatile byte left_stop = LOW;
 volatile byte right_stop = LOW;
+volatile unsigned long last_interrupt_time = 0;
 
-const byte numChars = 32;
-char receivedChars[numChars];  // an array to store the received data
+String receivedChars;  
 
-boolean newData = false;
+bool newData = false;
+bool homed=false;
+bool start_home=false;
 
 float speed = 0;
-bool cur_dir = 1;
+int msg = 0;
 float pos;
 
 void setup() {
   Serial.begin(115200);
   pinMode(left_stop_pin, INPUT_PULLUP);
   pinMode(right_stop_pin, INPUT_PULLUP);
-  pinMode(13, OUTPUT);
-  attachInterrupt(digitalPinToInterrupt(left_stop_pin), left_reset, FALLING);
-  attachInterrupt(digitalPinToInterrupt(right_stop_pin), right_reset, FALLING);
+  pinMode(LED_pin, OUTPUT);
+  // attachInterrupt(digitalPinToInterrupt(left_stop_pin), left_reset, FALLING);
+  // attachInterrupt(digitalPinToInterrupt(right_stop_pin), right_reset, FALLING);
   stepper.setMaxSpeed(max_speed * steps_per_mm);
   stepper.setAcceleration(125000.0 * steps_per_mm);
-  Serial.println("Press enter to home: ");
-  while (Serial.available()==0){
-
-  }
-  home();
-  delay(1000);
-  stepper.setSpeed( speed * steps_per_mm);
 }
 
 void loop() {
   recvWithEndMarker();
+  left_stop = !digitalRead(left_stop_pin);
+  right_stop = !digitalRead(right_stop_pin);
+  // Serial.print("End stops:");
+  // Serial.println(end_stop_triggered);
   if (newData) {
-    speed = atof(receivedChars);
-    if (speed < 0){
-      cur_dir = !cur_dir;
-      speed = -speed;
+    if (receivedChars.equals("?H")){
+      if (!homed){
+        Serial.println("homing");
+        start_home=true;
+      } else {
+        Serial.println("already homed");
+      }
     }
-    speed = max(0, min(speed, max_speed));
-    Serial.print("Speed set to ");
-    Serial.print(speed);
-    Serial.println(" mm/s.");
-    stepper.setSpeed((2*cur_dir-1) * speed * steps_per_mm);
+    else if (receivedChars.equals("?P")){
+      Serial.println(pos);
+      // digitalWrite(LED_pin, HIGH);
+    }
+    else if (receivedChars.indexOf("!P") != -1){
+      float new_pos = receivedChars.substring(2).toFloat() * steps_per_mm;
+      stepper.runToNewPosition(new_pos);
+      homed=false;
+    }
+    else if (receivedChars.indexOf("!IP") != -1){
+      float new_pos = (pos + receivedChars.substring(3).toFloat()) * steps_per_mm;
+      stepper.runToNewPosition(new_pos);
+      homed=false;
+    }
+    else {
+      speed = receivedChars.toFloat();
+      speed = max(-max_speed, min(speed, max_speed));
+      Serial.println(speed);
+      stepper.setSpeed(speed * steps_per_mm);
+      homed=false;
+      // digitalWrite(LED_pin, LOW);
+    }
     newData = false;
   }
   if (left_stop) {
-    cur_dir = 1;
+    stepper.stop();
     stepper.setCurrentPosition(0);
     stepper.runToNewPosition(reset_dist * steps_per_mm);
-    Serial.println("Left Home.");
-    left_stop = LOW;
+    left_stop = false;
+    if (start_home){
+      Serial.println("homed");
+      start_home=false;
+    } else {
+      Serial.println("left");
+    }
   } else if (right_stop) {
-    cur_dir = 0;
-    stepper.runToNewPosition(stepper.currentPosition() - (reset_dist * steps_per_mm));
-    Serial.println("Right home.");
-    right_stop = LOW;
+    stepper.stop();
+    Serial.println("right");
+    right_stop = false;
   }
   pos = stepper.currentPosition() / steps_per_mm;
+  if (start_home){
+    stepper.setSpeed(-home_speed * steps_per_mm);
+  }
   stepper.runSpeed();
 }
 
 void left_reset() {
-  stepper.stop();
-  left_stop = HIGH;
+  detachInterrupt(digitalPinToInterrupt(left_stop_pin));
+  unsigned long interrupt_time = millis();
+  // If interrupts come faster than 200ms, assume it's a bounce and ignore
+  if (interrupt_time - last_interrupt_time > 200) 
+  {
+    stepper.stop();
+    left_stop = true;
+    last_interrupt_time = interrupt_time;
+  }
 }
 
 void right_reset() {
-  stepper.stop();
-  right_stop = HIGH;
-}
-
-void home() {
-  stepper.setSpeed(-home_speed * steps_per_mm);
-  while (!left_stop) {
-    stepper.runSpeed();
+  detachInterrupt(digitalPinToInterrupt(right_stop_pin));
+  unsigned long interrupt_time = millis();
+  // If interrupts come faster than 200ms, assume it's a bounce and ignore
+  if (interrupt_time - last_interrupt_time > 200) 
+  {
+    stepper.stop();
+    right_stop = true;
+    last_interrupt_time = interrupt_time;
   }
-  stepper.stop();
-  stepper.setCurrentPosition(0);
-  delay(250);
-  stepper.setMaxSpeed(max_speed * steps_per_mm);
-  stepper.runToNewPosition(reset_dist * steps_per_mm);
-  left_stop = LOW;
 }
 
 void recvWithEndMarker() {
-  static byte ndx = 0;
   char endMarker = '\n';
-  char rc;
 
-  if (Serial.available() > 0) {
-    rc = Serial.read();
+  if (Serial.available()) {
 
-    if (rc != endMarker) {
-      receivedChars[ndx] = rc;
-      ndx++;
-      if (ndx >= numChars) {
-        ndx = numChars - 1;
-      }
-    } else {
-      receivedChars[ndx] = '\0';  // terminate the string
-      ndx = 0;
-      newData = true;
-    }
+    receivedChars = Serial.readStringUntil(endMarker);
+    newData = true;
+
   }
 }

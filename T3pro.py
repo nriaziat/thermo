@@ -3,6 +3,7 @@ import numpy as np
 from datetime import datetime
 import math
 from dataclasses import dataclass, fields
+import cv2 as cv
 
 debug = 0
 
@@ -286,7 +287,7 @@ class T3pro:
     FRAME_WIDTH = FRAME_RAW_WIDTH
     FRAME_HEIGHT = FRAME_RAW_HEIGHT - 4
 
-    def __init__(self, port: int = 0):
+    def __init__(self, port: int = 0, mtx=None, dist=None) -> None:
         self.cap = cv2.VideoCapture(port, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
         self.cap.set(cv2.CAP_PROP_ZOOM, 0x8004)
@@ -294,6 +295,8 @@ class T3pro:
         self.frame = None
         self.meta = None
         self.device_strings = None
+        self.mtx = mtx
+        self.dist = dist
 
     def __enter__(self):
         return self
@@ -327,7 +330,14 @@ class T3pro:
             ret, frame_raw, frame, meta = self.read_()
             device_strings = device_info(meta)
             self.frame_raw = frame_raw
-            self.frame = frame
+            if self.mtx is not None:
+                h, w = frame.shape[:2]
+                newcameramtx, roi = cv.getOptimalNewCameraMatrix(self.mtx, self.dist, (w, h), 1, (w, h))
+                frame = cv.undistort(frame, self.mtx, self.dist, None, newcameramtx)
+                x, y, w, h = roi
+                self.frame = frame[y:y + h, x:x + w]
+            else:
+                self.frame = frame
             self.meta = meta
             self.device_strings = device_strings
             return ret, self.frame
@@ -337,16 +347,18 @@ class T3pro:
 
 
 if __name__ == "__main__":
-    writer = cv2.VideoWriter('output.avi', cv2.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
+    # writer = cv2.VideoWriter('output_16.avi', cv2.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
     with T3pro() as t3:
         while True:
             ret, frame = t3.read()
+            _, lut = t3.info()
+            temp_array = lut[frame]
             if ret:
                 frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-                frame = cv2.applyColorMap(frame, cv2.COLORMAP_JET)
-                writer.write(frame)
+                frame = cv2.applyColorMap(frame, cv2.COLORMAP_HOT)
+                # writer.write(frame)
                 cv2.imshow('frame', frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     break
-    writer.release()
+    # writer.release()
