@@ -19,6 +19,7 @@ class LoggingData:
     velocities: list[float] = field(default_factory=list)
     deflections: list[float] = field(default_factory=list)
     thermal_frames: list[np.ndarray] = field(default_factory=list)
+    positions: list[float] = field(default_factory=list)
 
     def save(self, filename):
         with open(filename, "wb") as f:
@@ -58,8 +59,10 @@ class ExperimentManager:
         self.vel_opt = velopt
 
         if video_save:
-            self.video_save = cv.VideoWriter(f"logs/output_{self.date.strftime('%Y-%m-%d-%H:%M')}.avi", cv.VideoWriter.fourcc(*'XVID'), 30,
-                                         (384, 288))
+            self.video_save = cv.VideoWriter(f"logs/output_{self.date.strftime('%Y-%m-%d-%H:%M')}.avi",
+                                             cv.VideoWriter.fourcc(*'XVID'),
+                                             30,
+                                             (384, 288))
         else:
             self.video_save = None
 
@@ -109,25 +112,27 @@ class ExperimentManager:
         else:
             print("Skipping homing.")
 
-        start_input = input("Press Enter to start the experiment or 'q' to quit: ")
+        ret, thermal_arr, raw_frame, _ = self.get_t3_frame()
+        color_frame = thermal_frame_to_color(thermal_arr)
+
+        start_input = input("Ensure tool is on and touching tissue. Press Enter to start the experiment or 'q' to quit: ")
         if start_input == 'q':
             print("Quitting...")
             self.testbed.stop()
             exit(0)
-        print("Starting experiment...")
 
-        ret, thermal_arr, raw_frame, _ = self.get_t3_frame()
-        color_frame = thermal_frame_to_color(thermal_arr)
-        cv.imshow("Thermal Camera", color_frame)
-        cv.waitKey(0)
-        cv.destroyWindow("Thermal Camera")
-
-        neutral_point_str = input("Enter neutral pose coordinates in px x,y: ")
-        try:
-            neutral_point = (int(neutral_point_str.split(',')[1]), int(neutral_point_str.split(',')[0]))
-        except IndexError:
-            raise ValueError("Invalid input. Please enter in the format x,y")
-        self.vel_opt.neutral_tip_pos = neutral_point
+        # ret, thermal_arr, raw_frame, _ = self.get_t3_frame()
+        # color_frame = thermal_frame_to_color(thermal_arr)
+        # cv.imshow("Thermal Camera", color_frame)
+        # cv.waitKey(0)
+        # cv.destroyWindow("Thermal Camera")
+        #
+        # neutral_point_str = input("Enter neutral pose coordinates in px x,y: ")
+        # try:
+        #     neutral_point = (int(neutral_point_str.split(',')[1]), int(neutral_point_str.split(',')[0]))
+        # except IndexError:
+        #     raise ValueError("Invalid input. Please enter in the format x,y")
+        # self.vel_opt.neutral_tip_pos = neutral_point
         self.experiment_started = True
 
     def send_deflection_to_velopt(self, v, thermal_frame):
@@ -137,10 +142,10 @@ class ExperimentManager:
         @return: new_v, ellipse
         """
         self.deflection_kf.predict()
-        meas, _ = self.vel_opt.update_tool_deflection(thermal_frame)
+        meas, ddeflection = self.vel_opt.update_tool_deflection(thermal_frame)
         self.deflection_kf.update(meas/self.thermal_px_per_mm)
         self.deflection = self.deflection_kf.x[0]
-        return self.vel_opt.update_velocity(v, thermal_frame, deflection=self.deflection)
+        return self.vel_opt.update_velocity(v, thermal_frame, deflection=self.deflection, ddeflection=ddeflection)
 
     @property
     def thermal_deflection(self):
@@ -161,9 +166,9 @@ class ExperimentManager:
         thermal_arr = lut[raw_frame]
         if not ret:
             return ret, None, None, None
-        if self.debug:
-            self.logger.debug(
-                f"Max Temp (C): {info.Tmax_C}, Min Temp (C): {info.Tmin_C}, Max Temp Location: {info.Tmax_point}, Min Temp Location: {info.Tmin_point}")
+        # if self.debug:
+        #     self.logger.debug(
+        #         f"Max Temp (C): {info.Tmax_C}, Min Temp (C): {info.Tmin_C}, Max Temp Location: {info.Tmax_point}, Min Temp Location: {info.Tmin_point}")
         return ret, thermal_arr, raw_frame, info
 
     @staticmethod
@@ -178,7 +183,8 @@ class ExperimentManager:
 
     def _end_experiment(self):
         self.testbed.stop()
-        self.data_log.save(f"logs/data_{self.date.strftime('%Y-%m-%d-%H:%M')}.pkl")
+        experiment_type = "adaptive" if self.adaptive_velocity else f"{self.const_velocity}mm-s"
+        self.data_log.save(f"logs/data_{experiment_type}_{self.date.strftime('%Y-%m-%d-%H:%M')}.pkl")
         if self.video_save is not None:
             self.video_save.release()
         self.t3.release()
@@ -187,17 +193,19 @@ class ExperimentManager:
 
     def add_data_to_list(self, thermal_arr):
         self.data_log.widths.append(self.vel_opt.width / self.thermal_px_per_mm)
-        self.data_log.velocities.append(self.vel_opt.v)
+        if self.adaptive_velocity:
+            self.data_log.velocities.append(self.vel_opt.pid_velocity)
+        else:
+            self.data_log.velocities.append(self.const_velocity)
         self.data_log.deflections.append(self.deflection)
         self.data_log.thermal_frames.append(thermal_arr)
 
 
-    def save_video_frame(self, frame):
-        color_frame = thermal_frame_to_color(frame)
+    def save_video_frame(self, color_frame):
         self.video_save.write(color_frame)
 
     @staticmethod
-    def draw_info_on_frame(frame, ellipse, deflection, width, velocity):
+    def draw_info_on_frame(frame, ellipse, deflection, width, velocity, tool_tip_pos=None):
         cv.ellipse(frame, ellipse, (0, 255, 0), 2)
         cv.putText(frame, f"Deflection: {deflection:.2f} mm",
                    (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -205,6 +213,9 @@ class ExperimentManager:
                    (10, 40), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         cv.putText(frame, f"Velocity: {velocity:.2f} mm/s",
                    (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        if tool_tip_pos is not None:
+
+            cv.circle(frame, (int(tool_tip_pos[0]), int(tool_tip_pos[1])), 2, (0, 0, 255), -1)
         return frame
 
     def run_experiment(self):
@@ -213,21 +224,22 @@ class ExperimentManager:
         on the screen.
         """
         self._prepare_experiment()
-        if self.adaptive_velocity:
-            self.set_speed(self.vel_opt.v)
-        else:
-            self.set_speed(self.const_velocity)
+        print("Starting experiment...")
         while True:
             ret, thermal_arr, raw_frame, _ = self.get_t3_frame()
-            if self.video_save is not None:
-                self.save_video_frame(raw_frame)
             color_frame = thermal_frame_to_color(thermal_arr)
+            if self.video_save is not None:
+                self.save_video_frame(color_frame)
 
-            self.vel_opt.v, ellipse = self.send_deflection_to_velopt(self.vel_opt.v, thermal_arr)
-            if self.vel_opt.width / self.thermal_px_per_mm < 0.1:
-                print("Warning: Width is less than 0.1 mm, tool may have lost contact with the surface.")
+            _, ellipse = self.send_deflection_to_velopt(self.vel_opt.pid_velocity, thermal_arr)
+            if width := (self.vel_opt.width / self.thermal_px_per_mm) < 0.05:
+                print("Warning: Tool may have lost contact with the surface.")
+            elif width > 10:
+                print("Warning: Width is greater than 10 mm, excess tissue damage may occur.")
             if self.adaptive_velocity:
-                ret = self.set_speed(self.vel_opt.v)
+                ret = self.set_speed(self.vel_opt.pid_velocity)
+            else:
+                ret = self.set_speed(self.const_velocity)
             if self.debug:
                 self.logger.debug(self.vel_opt.get_loggable_data())
 
@@ -236,12 +248,14 @@ class ExperimentManager:
             if self.debug:
                 # print(f"v: {self.qs.v:.2f} mm/s, Width: {self.qs.width / self.thermal_px_per_mm:.2f} mm, Deflection: {self.qs.deflection / self.thermal_px_per_mm:.2f} mm")
                 if self.adaptive_velocity:
-                    self.logger.debug(f"Velocity: {self.vel_opt.v:.2f} mm/s")
+                    self.logger.debug(f"Velocity: {self.vel_opt.pid_velocity:.2f} mm/s")
                 else:
                     self.logger.debug(f"Velocity: {self.const_velocity} mm/s")
 
             color_frame = self.draw_info_on_frame(color_frame, ellipse, self.deflection,
-                                                  self.vel_opt.width / self.thermal_px_per_mm, self.vel_opt.v)
+                                                  self.vel_opt.width / self.thermal_px_per_mm,
+                                                  self.vel_opt.pid_velocity,
+                                                  self.vel_opt.tool_tip_pos)
             cv.imshow("Thermal Camera", color_frame)
             key = cv.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -249,6 +263,7 @@ class ExperimentManager:
                 break
 
             pos = self.testbed.get_position()
+            self.data_log.positions.append(pos)
             if not ret or pos == -1:
                 break
 

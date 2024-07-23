@@ -7,8 +7,8 @@ thermal_px_per_mm = 5.1337 # px/mm
 t3 = T3pro(port=0)
 tb = Testbed()
 velopt = OnlineVelocityOptimizer(des_width=1 * thermal_px_per_mm,
-                                               t_death=45,
-                                               v_max=12)
+                                               t_death=55,
+                                               v_max=15)
 
 if __name__ == "__main__":
     adaptive_velocity = input("Adaptive Velocity? (y/n): ").lower().strip()

@@ -145,17 +145,15 @@ def find_tooltip(therm_frame: np.ndarray, t_death, neutral_tip_pos) -> tuple | N
     :param neutral_tip_pos: Neutral position of the tool tip [px]
     :return: x, y location of the tooltip [px]
     """
-    tip_mask = np.ones_like(therm_frame).astype(np.uint8)
-    tip_mask[neutral_tip_pos] = 0
+    # tip_mask = np.ones_like(therm_frame).astype(np.uint8)
+    # tip_mask[neutral_tip_pos] = 0
 
     if (therm_frame > t_death).any():
         gaus = cv.filter2D(therm_frame, cv.CV_64F, gaus_kernel)
         norm16 = cv.normalize(gaus, None, 0, 65535, cv.NORM_MINMAX, cv.CV_16U)
         cl1 = clahe.apply(norm16)
         norm_frame = cv.normalize(cl1, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-        dist = cv.distanceTransform(tip_mask, cv.DIST_L2, 5)
-        dist /= np.max(dist)
-        weight_mask = np.exp(-dist * 5)
+        weight_mask = np.ones_like(therm_frame)
         weighted_frame = cv.multiply(norm_frame, weight_mask, dtype=cv.CV_8U)
         tip = np.unravel_index(np.argmax(weighted_frame), norm_frame.shape)
         return tip
@@ -164,15 +162,18 @@ def find_tooltip(therm_frame: np.ndarray, t_death, neutral_tip_pos) -> tuple | N
 
 
 class ThermalPID:
-    Kp = 0.1
-    Ki = 0.0005
-    Kd = 0.001
+    Kp = 0.2
+    # Ki = 0.0005
+    Ki = 0
+    Kd = 0.1
+    importance_weight = 0.5
+    width_scale = 15
 
     def __init__(self,
-                    des_width: float = 1,
+                    des_width: float,
                     v_min: float = 1,
                     v_max: float = 10,
-                    max_accel: float = 1,
+                    max_accel: float = 10,
                     v0: float = 1):
         """
 
@@ -198,9 +199,7 @@ class ThermalPID:
         self._last_error = self._error
         self.width = width
         width_error = width - self.des_width if width > self.des_width else 0
-        error = (1-importance_weight) * width_error + importance_weight * (-10 * deflection)
-        print(f"Width component: {(1-importance_weight) * width_error:.2f}, "
-              f"Deflection component: {importance_weight * -10 * deflection:.2f}")
+        error = (1-importance_weight) * width_error + importance_weight * (-self.width_scale * deflection)
         self._error = error
 
     def compute_dv(self, derror: float) -> float:
@@ -235,18 +234,21 @@ class ThermalPID:
             error_sum = 0
         return v, error_sum
 
-    def update(self, v, deflection: float, width, dwidth, importance_weight) -> float:
+    def update(self, v, deflection: float, width, dwidth, ddeflection, importance_weight=None) -> float:
         """
         Update the tool speed based on the current state
         :param v: Current tool speed
         :param deflection: Tool deflection state
         :param width: Isotherm width
         :param dwidth: Width rate
-        :param importance_weight: Weight of the width component (0-1)
+        :param importance_weight: Weight of the width component (0-1) compared to the deflection component
         :return: New tool speed
         """
+        if importance_weight is None:
+            importance_weight = self.importance_weight
         self.compute_error(deflection, width, importance_weight)
-        dv = self.compute_dv(dwidth)
+        derror = (1-importance_weight) * dwidth + importance_weight * -self.width_scale * ddeflection
+        dv = self.compute_dv(derror=derror)
         self.v, self._error_sum = self.enforce_pid_limits(v + dv, self._error_sum)
         return self.v
 
@@ -265,18 +267,13 @@ class ThermalPID:
 
 
 class OnlineVelocityOptimizer:
-    Kp = 0.1
-    Ki = 0.0005
-    Kd = 0.001
 
     def __init__(self,
                  des_width: float = 1,
                  v_min: float = 1,
                  v_max: float = 10,
-                 max_accel: float = 1,
                  v0: float = 1,
                  t_death: float = 50,
-                 use_cv: bool = True,
                  neutral_tip_pos: tuple = (183, 355)):
         """
         :param des_width: Desired Isotherm width [px]
@@ -284,11 +281,10 @@ class OnlineVelocityOptimizer:
         :param v_max: maximum tool speed [mm/s]
         :param v0: Starting tool speed [mm/s]
         :param t_death: Isotherm temperature [C]
-        :param use_cv: Use OpenCV for isotherm width calculation, otherwise use heuristic measure.
         """
 
-        self.thermal_pid = ThermalPID(des_width=des_width, v_min=v_min, v_max=v_max, max_accel=max_accel, v0=v0)
-
+        self.thermal_pid = ThermalPID(des_width=des_width, v_min=v_min, v_max=v_max, v0=v0)
+        self._dt = 1/24
         self.t_death = t_death
         self._width_kf = KalmanFilter(dim_x=2, dim_z=1)
         self._width_kf.x = np.array([0, 0])
@@ -305,8 +301,15 @@ class OnlineVelocityOptimizer:
 
         self._tool_stiffness = 0.8705 # N/mm
 
-        self._cv = use_cv
         self.neutral_tip_pos = neutral_tip_pos
+
+    @property
+    def width(self):
+        return self.thermal_pid.width
+
+    @property
+    def pid_velocity(self):
+        return self.thermal_pid.v
 
     @property
     def deflection(self):
@@ -329,16 +332,16 @@ class OnlineVelocityOptimizer:
         """
         self._pos_kf = KalmanFilter(dim_x=4, dim_z=2)
         self._pos_kf.x = np.array([pos[0], 0, pos[1], 0])
-        self._pos_kf.F = np.array([[1, 1/24, 0, 0],
+        self._pos_kf.F = np.array([[1, self._dt, 0, 0],
                                    [0, 0.7, 0, 0],
-                                   [0, 0, 1, 1/24],
+                                   [0, 0, 1, self._dt],
                                    [0, 0, 0, 0.7]])
         self._pos_kf.H = np.array([[1, 0, 0, 0],
                                    [0, 0, 1, 0]])
         self._pos_kf.P *= 1
         self._pos_kf.R = np.array([[10, 0],
                                    [0, 10]])
-        self._pos_kf.Q = Q_discrete_white_noise(dim=4, dt=1/24, var=9)
+        self._pos_kf.Q = Q_discrete_white_noise(dim=4, dt=self._dt, var=9)
 
     def update_tool_deflection(self, frame: np.ndarray[float]) -> tuple[float, float]:
         """
@@ -352,6 +355,7 @@ class OnlineVelocityOptimizer:
         elif not self._pos_kf_init:
             self.init_pos_kf(tool_tip)
             self._pos_kf_init = True
+            self.neutral_tip_pos= np.array(tool_tip)
         self._pos_kf.predict()
         self._pos_kf.update(tool_tip)
         deflection = np.array([self._pos_kf.x[0] - self.neutral_tip_pos[0], self._pos_kf.x[2] - self.neutral_tip_pos[1]])
@@ -359,27 +363,23 @@ class OnlineVelocityOptimizer:
         return np.linalg.norm(deflection), np.linalg.norm(ddeflection) * np.sign(np.dot(deflection, ddeflection))
 
 
-    def update_velocity(self, v: float, frame: np.ndarray[float], deflection) -> any:
+    def update_velocity(self, v: float, frame: np.ndarray[float], deflection, ddeflection) -> any:
         """
         Update the tool speed based on the current frame
         :param v: Current tool speed
         :param frame: Temperature field from the camera. If None, the field will be predicted using the current model
         :param deflection: Tool deflection [px]
+        :param ddeflection: Tool deflection rate [px/s]
         :return: new tool speed, ellipse of the isotherm if using CV
         """
 
-        importance_weight = 0.65
         self._deflection = deflection
 
-        ellipse = None
-        if not self._cv:
-            z = isotherm_width(frame, self.t_death)
-        else:
-            z, ellipse = cv_isotherm_width(frame, self.t_death)
+        z, ellipse = cv_isotherm_width(frame, self.t_death)
 
         self._width_kf.predict()
         self._width_kf.update(z)
         width = self._width_kf.x[0]
-        derror = self._width_kf.x[1]
-        v = self.thermal_pid.update(v, deflection, width, derror, importance_weight)
+        dwidth = self._width_kf.x[1]
+        v = self.thermal_pid.update(v, deflection, width, dwidth, ddeflection)
         return v, ellipse

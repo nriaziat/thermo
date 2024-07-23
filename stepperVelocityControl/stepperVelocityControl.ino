@@ -43,7 +43,7 @@ void loop() {
   right_stop = !digitalRead(right_stop_pin);
   // Serial.print("End stops:");
   // Serial.println(end_stop_triggered);
-  if (newData) {
+  if (newData && !start_home) {
     if (receivedChars.equals("?H")){
       if (!homed){
         Serial.println("homing");
