@@ -18,6 +18,7 @@ class TestbedCommandType(Enum):
 
 class TestbedResponse(Enum):
     HOMED = "homed"
+    ALREADY_HOMED = "already homed"
     LEFT = "left"
     RIGHT = "right"
     ERROR = "-1"
@@ -71,7 +72,9 @@ class Testbed:
         while (response := self.__read_serial()) != TestbedResponse.HOMED:
             if response == TestbedResponse.ERROR:
                 return False
-            time.sleep(1)
+            time.sleep(0.1)
+        self.ser.reset_output_buffer()
+        self.ser.reset_input_buffer()
         return True
 
     def get_position(self) -> float:
@@ -96,6 +99,7 @@ class Testbed:
         """
         ret = self.__send_serial_command(TestbedCommand(TestbedCommandType.SPEED, speed))
         if not ret:
+            print("Error sending speed command")
             return False
         data = self.__read_serial()
         if data is float:
@@ -107,12 +111,12 @@ class Testbed:
             print("Error setting speed")
             self.stop()
             return False
-        elif data == TestbedResponse.HOMING:
-            # print("Testbed state: ", data)
-            return False
         elif data == TestbedResponse.LEFT or data == TestbedResponse.RIGHT:
             print("Endstop reached")
             self.stop()
+            return False
+        elif data == TestbedResponse.HOMING:
+            print("Testbed state: ", data)
             return False
         return True
 

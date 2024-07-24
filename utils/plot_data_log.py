@@ -2,17 +2,18 @@ import pickle as pkl
 import matplotlib.pyplot as plt
 import numpy as np
 from ExperimentManager import LoggingData
-from os import PathLike
+from os import PathLike, listdir
 
-def plot_data_log(file_paths: list[str | PathLike]):
+def plot_data_log(file_dir: str | PathLike):
     """
     Plot the data log from an experiment.
-    :param file_paths: list[str | PathLike] - The paths to the data log files.
+    :param file_dir: str | PathLike - The paths to the data log files.
     """
     fig, ax = plt.subplots(3, 1)
     exp_types = []
     # adaptive_data_log = LoggingData()
     # constant_data_log = LoggingData()
+    file_paths = [file_dir + "/" + f for f in listdir(file_dir) if f.endswith(".pkl") and f.startswith("data")]
     min_dist = np.inf
     for fp in file_paths:
         exp_type = fp.split("_")[1].lower()
@@ -56,9 +57,5 @@ def plot_data_log(file_paths: list[str | PathLike]):
     plt.show()
 
 
-plot_data_log(["../logs/data_Adaptive_2024-07-23-13:29.pkl",
-                "../logs/data_adaptive_2024-07-23-13:51.pkl",
-                 "../logs/data_3.0mm-s_2024-07-23-13:52.pkl",
-               "../logs/data_3.0mm-s_2024-07-23-14:06.pkl",
-                "../logs/data_adaptive_2024-07-23-14:05.pkl"])
+plot_data_log("../logs")
 

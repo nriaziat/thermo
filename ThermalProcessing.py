@@ -165,7 +165,7 @@ class ThermalPID:
     Kp = 0.2
     # Ki = 0.0005
     Ki = 0
-    Kd = 0.1
+    Kd = 0.0
     importance_weight = 0.5
     width_scale = 15
 
@@ -209,8 +209,8 @@ class ThermalPID:
         :return: Change in velocity
         """
         dv = self.Kp * self._error + self.Ki * self._error_sum - self.Kd * derror
-        if abs(dv) > self._max_accel:
-            dv = np.sign(dv) * self._max_accel
+        if dv > self._max_accel:
+            dv = self._max_accel
         return dv
 
     def enforce_pid_limits(self, v: float, error_sum: float) -> tuple[float, float]:
@@ -354,13 +354,19 @@ class OnlineVelocityOptimizer:
             return 0, 0
         elif not self._pos_kf_init:
             self.init_pos_kf(tool_tip)
-            self._pos_kf_init = True
             self.neutral_tip_pos= np.array(tool_tip)
+            self._pos_kf_init = True
         self._pos_kf.predict()
         self._pos_kf.update(tool_tip)
         deflection = np.array([self._pos_kf.x[0] - self.neutral_tip_pos[0], self._pos_kf.x[2] - self.neutral_tip_pos[1]])
         ddeflection = np.array([self._pos_kf.x[1], self._pos_kf.x[3]])
         return np.linalg.norm(deflection), np.linalg.norm(ddeflection) * np.sign(np.dot(deflection, ddeflection))
+
+    def reset_tool_deflection(self):
+        """
+        Reset the tool deflection state
+        """
+        self._pos_kf_init = False
 
 
     def update_velocity(self, v: float, frame: np.ndarray[float], deflection, ddeflection) -> any:

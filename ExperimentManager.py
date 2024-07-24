@@ -1,3 +1,5 @@
+from shutil import posix
+
 import numpy as np
 import cv2 as cv
 import matplotlib.pyplot as plt
@@ -121,18 +123,6 @@ class ExperimentManager:
             self.testbed.stop()
             exit(0)
 
-        # ret, thermal_arr, raw_frame, _ = self.get_t3_frame()
-        # color_frame = thermal_frame_to_color(thermal_arr)
-        # cv.imshow("Thermal Camera", color_frame)
-        # cv.waitKey(0)
-        # cv.destroyWindow("Thermal Camera")
-        #
-        # neutral_point_str = input("Enter neutral pose coordinates in px x,y: ")
-        # try:
-        #     neutral_point = (int(neutral_point_str.split(',')[1]), int(neutral_point_str.split(',')[0]))
-        # except IndexError:
-        #     raise ValueError("Invalid input. Please enter in the format x,y")
-        # self.vel_opt.neutral_tip_pos = neutral_point
         self.experiment_started = True
 
     def send_deflection_to_velopt(self, v, thermal_frame):
@@ -205,7 +195,7 @@ class ExperimentManager:
         self.video_save.write(color_frame)
 
     @staticmethod
-    def draw_info_on_frame(frame, ellipse, deflection, width, velocity, tool_tip_pos=None):
+    def draw_info_on_frame(frame, ellipse, deflection, width, velocity, tool_tip_pos):
         cv.ellipse(frame, ellipse, (0, 255, 0), 2)
         cv.putText(frame, f"Deflection: {deflection:.2f} mm",
                    (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -214,8 +204,7 @@ class ExperimentManager:
         cv.putText(frame, f"Velocity: {velocity:.2f} mm/s",
                    (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         if tool_tip_pos is not None:
-
-            cv.circle(frame, (int(tool_tip_pos[0]), int(tool_tip_pos[1])), 2, (0, 0, 255), -1)
+            cv.circle(frame, (int(tool_tip_pos[0]), int(tool_tip_pos[1])), 3, (0, 0, 255), -1)
         return frame
 
     def run_experiment(self):
@@ -238,6 +227,8 @@ class ExperimentManager:
                 print("Warning: Width is greater than 10 mm, excess tissue damage may occur.")
             if self.adaptive_velocity:
                 ret = self.set_speed(self.vel_opt.pid_velocity)
+                if self.vel_opt.pid_velocity < 1.5:
+                    self.vel_opt.reset_tool_deflection()
             else:
                 ret = self.set_speed(self.const_velocity)
             if self.debug:
@@ -251,8 +242,10 @@ class ExperimentManager:
                     self.logger.debug(f"Velocity: {self.vel_opt.pid_velocity:.2f} mm/s")
                 else:
                     self.logger.debug(f"Velocity: {self.const_velocity} mm/s")
-
-            color_frame = self.draw_info_on_frame(color_frame, ellipse, self.deflection,
+            print(f"Tool pos: {self.vel_opt.tool_tip_pos}")
+            color_frame = self.draw_info_on_frame(color_frame,
+                                                  ellipse,
+                                                  self.deflection,
                                                   self.vel_opt.width / self.thermal_px_per_mm,
                                                   self.vel_opt.pid_velocity,
                                                   self.vel_opt.tool_tip_pos)
@@ -265,6 +258,7 @@ class ExperimentManager:
             pos = self.testbed.get_position()
             self.data_log.positions.append(pos)
             if not ret or pos == -1:
+                print(ret, pos)
                 break
 
         print(f"Avg Width: {np.mean(self.data_log.widths):.2f} mm")
