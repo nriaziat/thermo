@@ -83,6 +83,9 @@ class Testbed:
         :return: float - The position of the testbed in mm.
         """
         ret = self.__send_serial_command(TestbedCommand(TestbedCommandType.POSITION))
+        if not ret:
+            print("Error sending position command")
+            return -1
         data = self.__read_serial()
         try:
             response = TestbedResponse(data)

@@ -166,6 +166,9 @@ class ThermalPID:
     # Ki = 0.0005
     Ki = 0
     Kd = 0.0
+    Kf = 0.4
+    K_adaptive_deflection = 0.025
+    K_adaptive_width = 0.05
     importance_weight = 0.5
     width_scale = 15
 
@@ -187,6 +190,8 @@ class ThermalPID:
         self._last_error = 0
         self._error_sum = 0
         self.width = 0
+        self.tool_damping_estimate = 0.1
+        self.width_constant_estimate = 0
 
     def compute_error(self, deflection: float, width: float, importance_weight: float):
         """
@@ -200,7 +205,7 @@ class ThermalPID:
         self.width = width
         width_error = width - self.des_width if width > self.des_width else 0
         error = (1-importance_weight) * width_error + importance_weight * (-self.width_scale * deflection)
-        self._error = error
+        self._error = width_error
 
     def compute_dv(self, derror: float) -> float:
         """
@@ -208,10 +213,24 @@ class ThermalPID:
         :param derror: Current error rate
         :return: Change in velocity
         """
-        dv = self.Kp * self._error + self.Ki * self._error_sum - self.Kd * derror
+        deflection_error = -self.tool_damping_estimate * self.v
+        dv = self.Kp * self._error + self.Ki * self._error_sum - self.Kd * derror + self.Kf * deflection_error
         if dv > self._max_accel:
             dv = self._max_accel
         return dv
+
+    def estimate_tool_damping(self, v, deflection: float) -> None:
+        """
+        Estimate the tool damping based on the deflection
+        :param deflection: Tool deflection [mm]
+        """
+        error = self.tool_damping_estimate * v - deflection
+        self.tool_damping_estimate += -self.K_adaptive_deflection * v * error
+
+    def estimate_width_constant(self, v, width: float) -> None:
+        error = (self.width_constant_estimate / v) - width
+        # print(width, 1/v)
+        self.width_constant_estimate += -(self.K_adaptive_width / v) * error
 
     def enforce_pid_limits(self, v: float, error_sum: float) -> tuple[float, float]:
         """
@@ -234,6 +253,15 @@ class ThermalPID:
             error_sum = 0
         return v, error_sum
 
+    def find_optimal_speed(self, w1: float, w2: float) -> float:
+        """
+        Find the optimal tool speed based on the estimated parameters using minimization
+        :param w1: Weight of the width component
+        :param w2: Weight of the deflection component
+        """
+        return ((w1/w2) ** 0.25) * (self.width_constant_estimate / self.tool_damping_estimate) ** 0.5
+
+
     def update(self, v, deflection: float, width, dwidth, ddeflection, importance_weight=None) -> float:
         """
         Update the tool speed based on the current state
@@ -244,12 +272,16 @@ class ThermalPID:
         :param importance_weight: Weight of the width component (0-1) compared to the deflection component
         :return: New tool speed
         """
-        if importance_weight is None:
-            importance_weight = self.importance_weight
-        self.compute_error(deflection, width, importance_weight)
-        derror = (1-importance_weight) * dwidth + importance_weight * -self.width_scale * ddeflection
-        dv = self.compute_dv(derror=derror)
-        self.v, self._error_sum = self.enforce_pid_limits(v + dv, self._error_sum)
+        # if importance_weight is None:
+        #     importance_weight = self.importance_weight
+        self.estimate_tool_damping(v, deflection)
+        self.estimate_width_constant(v, width)
+        self.v = self.find_optimal_speed(1, 1)
+        # self.compute_error(deflection, width, importance_weight)
+        # derror = (1-importance_weight) * dwidth + importance_weight * -self.width_scale * ddeflection
+        # dv = self.compute_dv(derror=dwidth)
+        # self.v, self._error_sum = self.enforce_pid_limits(v + dv, self._error_sum)
+
         return self.v
 
     def get_loggable_data(self) -> dict:
@@ -262,6 +294,7 @@ class ThermalPID:
             "error": self._error,
             "error_sum": self._error_sum,
             "width": self.width,
+            "tool_damping": self.tool_damping_estimate
         }
 
 
@@ -270,7 +303,7 @@ class OnlineVelocityOptimizer:
 
     def __init__(self,
                  des_width: float = 1,
-                 v_min: float = 1,
+                 v_min: float = 0.25,
                  v_max: float = 10,
                  v0: float = 1,
                  t_death: float = 50,
@@ -283,7 +316,7 @@ class OnlineVelocityOptimizer:
         :param t_death: Isotherm temperature [C]
         """
 
-        self.thermal_pid = ThermalPID(des_width=des_width, v_min=v_min, v_max=v_max, v0=v0)
+        self.thermal_pid: ThermalPID = ThermalPID(des_width=des_width, v_min=v_min, v_max=v_max, v0=v0)
         self._dt = 1/24
         self.t_death = t_death
         self._width_kf = KalmanFilter(dim_x=2, dim_z=1)
@@ -330,17 +363,17 @@ class OnlineVelocityOptimizer:
         Initialize the position Kalman filter
         :param pos: Initial position of the tool tip
         """
+        damping_ratio = 0.7
         self._pos_kf = KalmanFilter(dim_x=4, dim_z=2)
         self._pos_kf.x = np.array([pos[0], 0, pos[1], 0])
         self._pos_kf.F = np.array([[1, self._dt, 0, 0],
-                                   [0, 0.7, 0, 0],
+                                   [0, damping_ratio, 0, 0],
                                    [0, 0, 1, self._dt],
-                                   [0, 0, 0, 0.7]])
+                                   [0, 0, 0, damping_ratio]])
         self._pos_kf.H = np.array([[1, 0, 0, 0],
                                    [0, 0, 1, 0]])
         self._pos_kf.P *= 1
-        self._pos_kf.R = np.array([[10, 0],
-                                   [0, 10]])
+        self._pos_kf.R = 10 * np.eye(2)
         self._pos_kf.Q = Q_discrete_white_noise(dim=4, dt=self._dt, var=9)
 
     def update_tool_deflection(self, frame: np.ndarray[float]) -> tuple[float, float]:

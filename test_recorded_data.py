@@ -58,7 +58,7 @@ for i, (line, therm_frame) in enumerate(zip(log_lines, therm_images)):
     #     new_v = v
     w = data['width'] / scale
 
-    new_v, _ = ovo.send_deflection_to_velopt(v, therm_frame)
+    new_v, _ = ovo.send_thermal_frame_to_velopt(v, therm_frame)
 
     frame = 255 * (therm_frame > 50).astype(np.uint8)
     color_frame = cv2.applyColorMap(therm_frame.astype(np.uint8), cmapy.cmap('hot'))

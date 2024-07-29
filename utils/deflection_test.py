@@ -53,7 +53,7 @@ while True:
     else:
         deflection = np.linalg.norm(tracker.kf.x[:2] - init_pose) / scale_factor
 
-    em.send_deflection_to_velopt(0, thermal_arr)
+    em.send_thermal_frame_to_velopt(0, thermal_arr)
     therm_deflection = em.thermal_deflection
     tool_pos = em.thermal_tool_tip_estimate
 
