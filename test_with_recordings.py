@@ -9,7 +9,7 @@ velopt = OnlineVelocityOptimizer(des_width=3 * thermal_px_per_mm,
                                  v_max=10)
 
 if __name__ == "__main__":
-    with open("logs/data_adaptive_2024-07-26-15:14.pkl", "rb") as f:
+    with open("logs/data_adaptive_2024-07-26-14:48.pkl", "rb") as f:
         data = pkl.load(f)
     adaptive_velocity = input("Adaptive Velocity? (y/n): ").lower().strip()
     constant_velocity = None

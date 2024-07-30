@@ -1,31 +1,28 @@
 import numpy as np
-# from scipy.optimize import minimize, curve_fit
-# from scipy.special import kn
 import cv2 as cv
 from filterpy.kalman import KalmanFilter
 from filterpy.common import Q_discrete_white_noise
 
-# Q = 500  # J / mm^2 ??
-# k = 0.49e-3  # W/(mm*K)
-# To = 23  # C
-# rho = 1090e-9  # kg/m^3
-# cp = 3421  # J/(kg*K)
-# alpha = k / (rho * cp)  # mm^2/s
-# a = Q / (2 * np.pi * k)
-# b = 1 / (2 * alpha)
-#
-# x_len = 50  # mm
-# x_res = 384  # pixels
-# y_res = 288
-# cam_mm_per_px = x_len / x_res  # mm per pixel
-# y_len = y_res * cam_mm_per_px
-#
-# ys = np.linspace(-y_len / 2, y_len / 2, y_res)
-# xs = np.linspace(-x_len / 2, x_len / 2, x_res)
-# grid = np.meshgrid(xs, ys)
 
 gaus_kernel = cv.getGaussianKernel(3, 0)
 clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+def point_in_ellipse(x, y, ellipse) -> bool:
+    """
+    Check if a point is inside the ellipse
+    :param x: x coordinate of the point
+    :param y: y coordinate of the point
+    :param ellipse: Ellipse parameters (center, axes, angle)
+    :return: True if the point is inside the ellipse
+    """
+    a, b = ellipse[1]
+    cx, cy = ellipse[0]
+    theta = np.deg2rad(ellipse[2])
+    x = x - cx
+    y = y - cy
+    x1 = x * np.cos(theta) + y * np.sin(theta)
+    y1 = -x * np.sin(theta) + y * np.cos(theta)
+    return (x1 / a) ** 2 + (y1 / b) ** 2
 
 def isotherm_width(t_frame: np.array, t_death: float) -> int:
     """
@@ -51,124 +48,59 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> (float, tuple | No
         contours = contours[0]
     list_of_pts = []
     for ctr in contours:
-        if cv.contourArea(ctr) > 50:
+        if cv.contourArea(ctr) > 100:
             list_of_pts += [pt[0] for pt in ctr]
 
     ctr = np.array(list_of_pts).reshape((-1, 1, 2)).astype(np.int32)
     hull = cv.convexHull(ctr)
     if hull is None or len(hull) < 5:
         return 0, None
+    # if cv.contourArea(hull) < 1:
+    #     return 0, None
     ellipse = cv.fitEllipse(hull)
     w = ellipse[1][0]
     return w, ellipse
 
 
-# def temp_field_prediction(xi, y, u, alph, beta, To) -> np.ndarray:
-#     """
-#     Predict the temperature field using the given parameters
-#     :param xi: x location relative to the tool [mm]
-#     :param y: y location relative to the tool [mm]
-#     :param u: tool speed [mm/s]
-#     :param alph: lumped parameter 1
-#     :param beta: lumped parameter 2
-#     :param To: ambient temperature [C]
-#     :return: Predicted temperature field [C]
-#     """
-#     if u < 0:
-#         u = -u
-#         xi = -xi
-#     r = np.sqrt(xi ** 2 + y ** 2)
-#     ans = To + alph * u * np.exp(-beta * xi * u, dtype=np.longfloat) * kn(0, beta * r * u)
-#     np.nan_to_num(ans, copy=False, nan=To, posinf=np.min(ans), neginf=np.max(ans))
-#     return ans
-
-
-# def predict_v(a_hat, b_hat, v0, v_min, v_max, des_width, To, t_death, grid) -> float:
-#     """
-#         Compute the optimal tool speed using numerical optimization
-#         :param a_hat: lumped parameter 1 estimate
-#         :param b_hat: lumped parameter 2 estimate
-#         :param v0: speed guess [mm/s]
-#         :param v_min: speed lower bound [mm/s]
-#         :param v_max: speed upper bound [mm/s]
-#         :param des_width: desired isotherm width [px]
-#         :param To: ambient temperature [C]
-#         :param t_death: isotherm temperature [C]
-#         :param grid: meshgrid of x, y locations [mm]
-#         :return: optimal tool speed [mm/s]
-#         """
-#     res = minimize(lambda x: (isotherm_width(temp_field_prediction(grid[0], grid[1],
-#                                                                    u=x, alph=a_hat,
-#                                                                    beta=b_hat, To=To),
-#                                              t_death) - des_width) ** 2, x0=v0,
-#                    bounds=((v_min, v_max),),
-#                    method='Powell')
-#     if not res.success:
-#         raise Exception("Optimization failed")
-#     return res.x[0]
-#
-#
-# def estimate_params(v, xdata, ydata, a_hat, b_hat) -> tuple[float, float]:
-#     """
-#     Estimate the parameters of the model using curve fitting
-#     :param v: tool speed [mm/s]
-#     :param xdata: (xi, y) data [mm]
-#     :param ydata: Temperature data [C]
-#     :param a_hat: current estimate of a
-#     :param b_hat: current estimate of b
-#     :return: a_hat, b_hat, cp_hat
-#     """
-#     if not np.isinf(ydata).any():
-#         try:
-#             popt, pvoc = curve_fit(
-#                 lambda x, ap, bp, cp: temp_field_prediction(x[0], x[1], u=v, alph=ap, beta=bp,
-#                                                             To=To) + np.random.normal(0,
-#                                                                                       cp),
-#                 xdata,
-#                 ydata,
-#                 p0=[a_hat, b_hat, 1],
-#                 bounds=([0, 0, 0], [np.inf, np.inf, np.inf]),
-#                 method='trf',
-#                 nan_policy='omit')
-#         except ValueError:
-#             return a_hat, b_hat
-#         return popt[0], popt[1]
-#     else:
-#         return a_hat, b_hat
-
-
-def find_tooltip(therm_frame: np.ndarray, t_death, neutral_tip_pos) -> tuple | None:
+def find_tooltip(therm_frame: np.ndarray, t_death, neutral_tip_pos, ellipse=None) -> tuple | None:
     """
     Find the location of the tooltip
     :param therm_frame: Temperature field [C]
     :param t_death: Isotherm temperature [C]
     :param neutral_tip_pos: Neutral position of the tool tip [px]
+    :param ellipse: Isotherm ellipse (optional)
     :return: x, y location of the tooltip [px]
     """
     # tip_mask = np.ones_like(therm_frame).astype(np.uint8)
     # tip_mask[neutral_tip_pos] = 0
 
     if (therm_frame > t_death).any():
-        gaus = cv.filter2D(therm_frame, cv.CV_64F, gaus_kernel)
-        norm16 = cv.normalize(gaus, None, 0, 65535, cv.NORM_MINMAX, cv.CV_16U)
+        # gaus = cv.filter2D(therm_frame, cv.CV_64F, gaus_kernel)
+        norm16 = cv.normalize(therm_frame, None, 0, 65535, cv.NORM_MINMAX, cv.CV_16U)
         cl1 = clahe.apply(norm16)
         norm_frame = cv.normalize(cl1, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-        weight_mask = np.ones_like(therm_frame)
-        weighted_frame = cv.multiply(norm_frame, weight_mask, dtype=cv.CV_8U)
-        tip = np.unravel_index(np.argmax(weighted_frame), norm_frame.shape)
+        # weight_mask = np.ones_like(therm_frame)
+        # weighted_frame = cv.multiply(norm_frame, weight_mask, dtype=cv.CV_8U)
+        tip = np.unravel_index(np.argmax(norm_frame), norm_frame.shape)
+        if ellipse is not None:
+            # find the closest point on the ellipse to the tip
+            dist = point_in_ellipse(tip[1], tip[0], ellipse)
+            if dist < 0.05:
+                print("Tip near center of ellipse")
+
         return tip
     else:
         return None
 
 
-class ThermalPID:
+class ThermalController:
     Kp = 0.2
     # Ki = 0.0005
     Ki = 0
     Kd = 0.0
     Kf = 0.4
-    K_adaptive_deflection = 0.025
-    K_adaptive_width = 0.05
+    K_adaptive_deflection = 0.005
+    K_adaptive_width = 0.01
     importance_weight = 0.5
     width_scale = 15
 
@@ -191,7 +123,7 @@ class ThermalPID:
         self._error_sum = 0
         self.width = 0
         self.tool_damping_estimate = 0.1
-        self.width_constant_estimate = 0
+        self.width_constant_estimate = 1
 
     def compute_error(self, deflection: float, width: float, importance_weight: float):
         """
@@ -202,7 +134,6 @@ class ThermalPID:
         """
         assert 0 <= importance_weight <= 1
         self._last_error = self._error
-        self.width = width
         width_error = width - self.des_width if width > self.des_width else 0
         error = (1-importance_weight) * width_error + importance_weight * (-self.width_scale * deflection)
         self._error = width_error
@@ -224,12 +155,17 @@ class ThermalPID:
         Estimate the tool damping based on the deflection
         :param deflection: Tool deflection [mm]
         """
-        error = self.tool_damping_estimate * v - deflection
+        deflection_estimate =  self.tool_damping_estimate * v
+        error = deflection_estimate - deflection
         self.tool_damping_estimate += -self.K_adaptive_deflection * v * error
 
     def estimate_width_constant(self, v, width: float) -> None:
-        error = (self.width_constant_estimate / v) - width
-        # print(width, 1/v)
+        """
+        Estimate the width constant based on the isotherm width
+        :param width: Isotherm width
+        """
+        width_estimate = self.width_constant_estimate / v
+        error = width_estimate - width
         self.width_constant_estimate += -(self.K_adaptive_width / v) * error
 
     def enforce_pid_limits(self, v: float, error_sum: float) -> tuple[float, float]:
@@ -259,28 +195,25 @@ class ThermalPID:
         :param w1: Weight of the width component
         :param w2: Weight of the deflection component
         """
-        return ((w1/w2) ** 0.25) * (self.width_constant_estimate / self.tool_damping_estimate) ** 0.5
+        v = ((w1/w2) ** 0.25) * (self.width_constant_estimate / self.tool_damping_estimate) ** 0.5
+        if np.isnan(v):
+            v = ((w1/w2) ** 0.25) * (-self.width_constant_estimate / self.tool_damping_estimate) ** 0.5
+        v = np.clip(v, self._v_min, self._v_max)
+        return v
 
 
-    def update(self, v, deflection: float, width, dwidth, ddeflection, importance_weight=None) -> float:
+    def update(self, v, deflection: float, width) -> float:
         """
         Update the tool speed based on the current state
         :param v: Current tool speed
         :param deflection: Tool deflection state
         :param width: Isotherm width
-        :param dwidth: Width rate
-        :param importance_weight: Weight of the width component (0-1) compared to the deflection component
         :return: New tool speed
         """
-        # if importance_weight is None:
-        #     importance_weight = self.importance_weight
+        self.width = width
         self.estimate_tool_damping(v, deflection)
         self.estimate_width_constant(v, width)
-        self.v = self.find_optimal_speed(1, 1)
-        # self.compute_error(deflection, width, importance_weight)
-        # derror = (1-importance_weight) * dwidth + importance_weight * -self.width_scale * ddeflection
-        # dv = self.compute_dv(derror=dwidth)
-        # self.v, self._error_sum = self.enforce_pid_limits(v + dv, self._error_sum)
+        self.v = self.find_optimal_speed(1, 10)
 
         return self.v
 
@@ -316,7 +249,7 @@ class OnlineVelocityOptimizer:
         :param t_death: Isotherm temperature [C]
         """
 
-        self.thermal_pid: ThermalPID = ThermalPID(des_width=des_width, v_min=v_min, v_max=v_max, v0=v0)
+        self.thermal_controller: ThermalController = ThermalController(des_width=des_width, v_min=v_min, v_max=v_max, v0=v0)
         self._dt = 1/24
         self.t_death = t_death
         self._width_kf = KalmanFilter(dim_x=2, dim_z=1)
@@ -332,17 +265,19 @@ class OnlineVelocityOptimizer:
         self._deflection = 0
         self._pos_kf = None
 
+        self.ellipse = None
+
         self._tool_stiffness = 0.8705 # N/mm
 
         self.neutral_tip_pos = neutral_tip_pos
 
     @property
     def width(self):
-        return self.thermal_pid.width
+        return self.thermal_controller.width
 
     @property
     def pid_velocity(self):
-        return self.thermal_pid.v
+        return self.thermal_controller.v
 
     @property
     def deflection(self):
@@ -382,7 +317,7 @@ class OnlineVelocityOptimizer:
         :param frame: Temperature field from the camera.
         :return: deflection [px], deflection rate [px/s]
         """
-        tool_tip = find_tooltip(frame, self.t_death, self.neutral_tip_pos)
+        tool_tip = find_tooltip(frame, self.t_death, self.neutral_tip_pos, self.ellipse)
         if tool_tip is None:
             return 0, 0
         elif not self._pos_kf_init:
@@ -402,23 +337,21 @@ class OnlineVelocityOptimizer:
         self._pos_kf_init = False
 
 
-    def update_velocity(self, v: float, frame: np.ndarray[float], deflection, ddeflection) -> any:
+    def update_velocity(self, v: float, frame: np.ndarray[float], deflection) -> any:
         """
         Update the tool speed based on the current frame
         :param v: Current tool speed
         :param frame: Temperature field from the camera. If None, the field will be predicted using the current model
         :param deflection: Tool deflection [px]
-        :param ddeflection: Tool deflection rate [px/s]
         :return: new tool speed, ellipse of the isotherm if using CV
         """
 
         self._deflection = deflection
 
-        z, ellipse = cv_isotherm_width(frame, self.t_death)
+        z, self.ellipse = cv_isotherm_width(frame, self.t_death)
 
         self._width_kf.predict()
         self._width_kf.update(z)
         width = self._width_kf.x[0]
-        dwidth = self._width_kf.x[1]
-        v = self.thermal_pid.update(v, deflection, width, dwidth, ddeflection)
-        return v, ellipse
+        v = self.thermal_controller.update(v, deflection, width)
+        return v, self.ellipse
