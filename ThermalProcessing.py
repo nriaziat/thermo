@@ -5,6 +5,16 @@ from filterpy.common import Q_discrete_white_noise
 from control import lqr
 from casadi import *
 import do_mpc
+# import matplotlib.pyplot as plt
+# plt.ion()
+# from matplotlib import rcParams
+# rcParams['text.usetex'] = True
+# rcParams['text.latex.preamble'] = [r'\usepackage{amsmath}',r'\usepackage{siunitx}']
+# rcParams['axes.grid'] = True
+# rcParams['lines.linewidth'] = 2.0
+# rcParams['axes.labelsize'] = 'xx-large'
+# rcParams['xtick.labelsize'] = 'xx-large'
+# rcParams['ytick.labelsize'] = 'xx-large'
 
 gaus_kernel = cv.getGaussianKernel(3, 0)
 clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -129,9 +139,9 @@ class ThermalController:
     gamma_b = 0.0005
     gamma_a = 0.0005
     am = 1
-    q = 0.09
-    r = 10
-    M = 25  # control horizon
+    q = 1
+    r = 15
+    M = 30  # control horizon
 
     model_type = 'continuous'
 
@@ -154,43 +164,72 @@ class ThermalController:
         self.width = 0
         self.width_constant_estimate = 10
         self.width_estimate = 0
-        self.a_hat = 5
+        self.deflection = 0
+        self.a_hat = 1
         self.b_hat = -5
         self.d_hat = 0.05
 
         self.model = do_mpc.model.Model(model_type=self.model_type)
-        self._x = self.model.set_variable(var_type='_x', var_name='x', shape=(1, 1))
+        # self._x = self.model.set_variable(var_type='_x', var_name='x', shape=(1, 1))
         self._u = self.model.set_variable(var_type='_u', var_name='u', shape=(1, 1))
-        self._a = self.model.set_variable(var_type='_tvp', var_name='a', shape=(1, 1))
-        self._b = self.model.set_variable(var_type='_tvp', var_name='b', shape=(1, 1))
-        self._d = self.model.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))
-        self.model.set_rhs('x', self._a * self._x + self._b * self._u)
-        self.model.set_expression('cost', self.q * self._x ** 2)
-        self.model.set_expression('deflection', (100 * self._d * self._u) ** 2)
+        # self._a = self.model.set_variable(var_type='_tvp', var_name='a', shape=(1, 1))
+        # self._b = self.model.set_variable(var_type='_tvp', var_name='b', shape=(1, 1))
+        # self._d = self.model.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))
+        self._a = self.model.set_variable(var_type='_x', var_name='a', shape=(1, 1))
+        self._b = self.model.set_variable(var_type='_x', var_name='b', shape=(1, 1))
+        self._d = self.model.set_variable(var_type='_x', var_name='d', shape=(1, 1))
+        self._width_measure = self.model.set_variable(var_type='_tvp', var_name='width', shape=(1, 1))
+        self._width_estimate = self.model.set_variable(var_type='_x', var_name='width_estimate', shape=(1, 1))
+        self._deflection_measure = self.model.set_variable(var_type='_tvp', var_name='deflection', shape=(1, 1))
+        self._width_error = self.model.set_expression('width_error', self._width_estimate - self._width_measure)
+        self._deflection_error = self.model.set_expression('deflection_error', self._d * self._u - self._deflection_measure)
+        # self.model.set_rhs('x', self._a * self._x + self._b * self._u)
+        self.model.set_rhs('width_estimate', -self.am * self._width_error + self._a * self._width_measure + self._b * self._u)
+        self.model.set_rhs('a', -self.gamma_a * self._width_error * self._width_measure)
+        self.model.set_rhs('b', -self.gamma_b * self._width_error * self._u)
+        self.model.set_rhs('d', -self.gamma_d * self._deflection_error * self._u )
+        self.model.set_expression('cost', self.q * self._width_estimate ** 2)
+        self.model.set_expression('defl_cost', 20000 * (self._d * self._u) ** 2)
         self.model.setup()
         self.mpc = do_mpc.controller.MPC(self.model)
         setup_mpc = {
             'n_horizon': self.M,
             'n_robust': 0,
             'open_loop': 0,
-            't_step': 1/24,
+            't_step': 1,
             'state_discretization': 'collocation',
             'collocation_type': 'radau',
-            'collocation_deg': 3,
+            'collocation_deg': 2,
             'collocation_ni': 1,
             'store_full_solution': True,
-            # 'nlpsol_opts': {'ipopt.linear_solver': 'ma57'}
+            # 'nlpsol_opts': {'ipopt.linear_solver': ''},
         }
-        self.mpc.settings.supress_ipopt_output()
+        # self.mpc.settings.supress_ipopt_output()
         self.mpc.set_param(**setup_mpc)
         self.mterm = self.model.aux['cost']
-        self.lterm = self.mterm+ self.model.aux['deflection']
+        self.lterm = self.mterm + self.model.aux['defl_cost']
         self.mpc.set_objective(mterm=self.mterm, lterm=self.lterm)
         self.mpc.set_rterm(u=self.r)
         self.mpc.bounds['lower', '_u', 'u'] = self._v_min
         self.mpc.bounds['upper', '_u', 'u'] = self._v_max
-        self.mpc.bounds['lower', '_x', 'x'] = 0
-        self.mpc.bounds['upper', '_x', 'x'] = np.inf
+        # self.mpc.bounds['lower', '_x', 'x'] = 0
+        # self.mpc.bounds['upper', '_x', 'x'] = np.inf
+        self.mpc.bounds['lower', '_x', 'width_estimate'] = 0
+        self.mpc.bounds['upper', '_x', 'width_estimate'] = np.inf
+        self.mpc.bounds['lower', '_x', 'a'] = 0
+        self.mpc.bounds['upper', '_x', 'a'] = np.inf
+        self.mpc.bounds['lower', '_x', 'b'] = -np.inf
+        self.mpc.bounds['upper', '_x', 'b'] = 0
+        self.mpc.bounds['lower', '_x', 'd'] = 0
+        self.mpc.bounds['upper', '_x', 'd'] = np.inf
+        self.mpc.scaling['_x', 'width_estimate'] = 1
+        self.mpc.scaling['_x', 'a'] = 1
+        self.mpc.scaling['_x', 'b'] = 1
+        self.mpc.scaling['_x', 'd'] = 0.01
+        self.mpc.scaling['_u', 'u'] = 1
+
+        # self.mpc.bounds['lower', '_x', 'pos'] = 0
+        # self.mpc.bounds['upper', '_x', 'pos'] = np.inf
         self.tvp_template = self.mpc.get_tvp_template()
         self.mpc.set_tvp_fun(self.tvp_fun)
         self.mpc.setup()
@@ -207,12 +246,12 @@ class ThermalController:
         # self.simulator.set_tvp_fun(self.sim_tvp_fun)
         # self.simulator.x0['x'] = 0
         # self.x0 = self.simulator.x0.cat.full()
-        self.mpc.x0 = 0
+        self.mpc.x0 = np.array([self.a_hat, self.b_hat, self.d_hat, self.width_estimate])
         self.mpc.set_initial_guess()
 
 
     def tvp_fun(self, t_now):
-        self.tvp_template['_tvp', :] = np.array([self.a_hat, self.b_hat, self.d_hat])
+        self.tvp_template['_tvp', :] = np.array([self.width, self.deflection])
         return self.tvp_template
 
     # def sim_tvp_fun(self, t_now):
@@ -264,7 +303,7 @@ class ThermalController:
     #     return v
 
     def find_mpc_speed(self, width: float) -> float:
-        u0 = self.mpc.make_step(np.array([width]))
+        u0 = self.mpc.make_step(np.array([self.a_hat, self.b_hat, self.d_hat, self.width_estimate]))
         return u0.item()
 
 
@@ -287,6 +326,7 @@ class ThermalController:
         :return: New tool speed
         """
         self.width = width
+        self.deflection = deflection
         self.estimate_tool_damping(v, deflection)
         # self.estimate_width_constant(v, width)
         # self.v = self.find_optimal_speed(1, 250)
@@ -440,4 +480,6 @@ class OnlineVelocityOptimizer:
         self._width_kf.update(z)
         width = self._width_kf.x[0]
         v = self.thermal_controller.update(v, deflection, width)
+        if abs(self.thermal_controller.b_hat) > 1e3 or abs(self.thermal_controller.a_hat) > 1e3 or abs(self.thermal_controller.width_estimate) > 1e3:
+            raise ValueError("Unstable system")
         return v, self.ellipse

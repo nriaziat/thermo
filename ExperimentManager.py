@@ -6,9 +6,7 @@ import datetime
 import pickle as pkl
 import cmapy
 from filterpy.kalman import KalmanFilter
-from dataclasses import dataclass, field, astuple, asdict
-
-from numpy.linalg.linalg import LinAlgError
+from dataclasses import dataclass, field
 
 
 def thermal_frame_to_color(thermal_frame):
@@ -236,8 +234,8 @@ class ExperimentManager:
 
             try:
                 _, ellipse = self.send_thermal_frame_to_velopt(self.vel_opt.controller_v, thermal_arr)
-            except LinAlgError as e:
-                print("LinAlgError:", e)
+            except ValueError as e:
+                print(e)
                 break
             if width := (self.vel_opt.width / self.thermal_px_per_mm) < 0.1:
                 cv.putText(color_frame, "Warning: Tool may not be touching tissue!", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
