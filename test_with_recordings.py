@@ -3,13 +3,12 @@ from ThermalProcessing import OnlineVelocityOptimizer
 import pickle as pkl
 
 thermal_px_per_mm = 5.1337 # px/mm
-velopt = OnlineVelocityOptimizer(des_width=3 * thermal_px_per_mm,
-                                 t_death=50,
+velopt = OnlineVelocityOptimizer(t_death=45,
                                  v_min=0.2,
-                                 v_max=10)
+                                 v_max=15)
 
 if __name__ == "__main__":
-    with open("logs/data_adaptive_2024-07-26-14:48.pkl", "rb") as f:
+    with open("logs/data_adaptive_2024-07-30-13:54.pkl", "rb") as f:
         data = pkl.load(f)
     adaptive_velocity = input("Adaptive Velocity? (y/n): ").lower().strip()
     constant_velocity = None

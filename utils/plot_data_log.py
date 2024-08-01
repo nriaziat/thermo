@@ -9,13 +9,14 @@ def plot_data_log(file: str | PathLike, ax: plt.Axes):
     color = "r" if "adaptive" in exp_type else "b"
     with open(file, "rb") as f:
         data: LoggingData = pkl.load(f)
+
     if len(data.velocities) < 100:
         return -1, exp_type
-    mean_width = np.mean(data.widths)
-    max_width = np.max(data.widths)
-    mean_deflection = np.mean(data.deflections)
-    std_width = np.std(data.widths)
-    std_deflection = np.std(data.deflections)
+    # mean_width = np.mean(data.widths)
+    # max_width = np.max(data.widths)
+    # mean_deflection = np.mean(data.deflections)
+    # std_width = np.std(data.widths)
+    # std_deflection = np.std(data.deflections)
     if hasattr(data, "position"):
         position = data.position
     else:
@@ -43,18 +44,28 @@ def plot_data_log(file: str | PathLike, ax: plt.Axes):
     ax[0].plot(position, data.velocities, color)
     ax[0].set_title("Velocities")
     ax[0].set_ylabel("Velocity (mm/s)")
-    # ax[0].set_xlabel("Position (mm)")
     ax[1].plot(position, data.widths, color)
     ax[1].set_title("Widths")
     ax[1].set_ylabel("Width (mm)")
-    # ax[1].set_xlabel("Position (mm)")
     ax[2].plot(position, data.deflections, color)
     ax[2].set_title("Deflections")
     ax[2].set_ylabel("Deflection (mm)")
     ax[3].plot(position, damping_estimates, color)
     ax[3].set_title("Damping Estimates")
     ax[3].set_ylabel("Damping Estimate")
-    ax[3].set_xlabel("Position (mm)")
+    ax[4].plot(position, data.a_hats, color)
+    ax[4].set_title("a_hat")
+    ax[4].set_ylabel("a_hat")
+    ax[5].plot(position, data.b_hats, color)
+    ax[5].set_title("b_hat")
+    ax[5].set_ylabel("b_hat")
+    if hasattr(data, "width_estimates"):
+        ax[6].plot(position, data.width_estimates, color)
+        ax[6].set_title("Width Estimates")
+        ax[6].set_ylabel("Width Estimate (mm)")
+        ax[6].set_xlabel("Position (mm)")
+    else:
+        ax[5].set_xlabel("Position (mm)")
     return min_dist, exp_type
 
 def plot_log_dir(file_dir: str | PathLike):
@@ -62,7 +73,7 @@ def plot_log_dir(file_dir: str | PathLike):
     Plot the data log from an experiment.
     :param file_dir: str | PathLike - The paths to the data log files.
     """
-    fig, axs = plt.subplots(4, 1)
+    fig, axs = plt.subplots(7, 1)
     exp_types = []
     # adaptive_data_log = LoggingData()
     # constant_data_log = LoggingData()
@@ -81,11 +92,11 @@ def plot_log_dir(file_dir: str | PathLike):
 
 
 # plot_log_dir("../logs")
-fig, ax = plt.subplots(4, 1)
-min_dist1, _ = plot_data_log("../logs/data_10.0mm-s_2024-07-26-15:16.pkl", ax)
-min_dist2, _ = plot_data_log("../logs/data_adaptive_2024-07-26-15:14.pkl", ax)
-for a in ax:
-    a.set_xlim(0, min(min_dist1, min_dist2))
+fig, ax = plt.subplots(7, 1)
+min_dist1, _ = plot_data_log("../logs/data_adaptive_2024-07-31-18:11.pkl", ax)
+# min_dist2, _ = plot_data_log("../logs/data_adaptive_2024-07-31-15:05.pkl", ax)
+# for a in ax:
+#     a.set_xlim(0, min(min_dist1, min_dist2))
 plt.show()
 
 

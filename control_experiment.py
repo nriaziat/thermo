@@ -6,10 +6,10 @@ from ThermalProcessing import OnlineVelocityOptimizer
 thermal_px_per_mm = 5.1337 # px/mm
 t3 = T3pro(port=0)
 tb = Testbed()
-velopt = OnlineVelocityOptimizer(des_width=3 * thermal_px_per_mm,
-                                 t_death=50,
-                                 v_min=0.2,
-                                 v_max=10)
+velopt = OnlineVelocityOptimizer(
+                                 t_death=40,
+                                 v_min=1,
+                                 v_max=15)
 
 if __name__ == "__main__":
     adaptive_velocity = input("Adaptive Velocity? (y/n): ").lower().strip()

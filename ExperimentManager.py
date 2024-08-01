@@ -8,6 +8,8 @@ import cmapy
 from filterpy.kalman import KalmanFilter
 from dataclasses import dataclass, field, astuple, asdict
 
+from numpy.linalg.linalg import LinAlgError
+
 
 def thermal_frame_to_color(thermal_frame):
     norm_frame = cv.normalize(thermal_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
@@ -23,7 +25,9 @@ class LoggingData:
     thermal_frames: list[np.ndarray] = field(default_factory=list)
     positions: list[float] = field(default_factory=list)
     damping_estimates: list[float] = field(default_factory=list)
-    width_constant_estimates: list[float] = field(default_factory=list)
+    a_hats: list[float] = field(default_factory=list)
+    b_hats: list[float] = field(default_factory=list)
+    width_estimates: list[float] = field(default_factory=list)
 
     def __iter__(self):
         return iter(zip(self.velocities, self.widths, self.deflections, self.thermal_frames, self.positions, self.damping_estimates))
@@ -189,14 +193,17 @@ class ExperimentManager:
     def add_to_data_log(self, thermal_arr):
         self.data_log.widths.append(self.vel_opt.width / self.thermal_px_per_mm)
         if self.adaptive_velocity:
-            self.data_log.velocities.append(self.vel_opt.pid_velocity)
+            self.data_log.velocities.append(self.vel_opt.controller_v)
         else:
             self.data_log.velocities.append(self.const_velocity)
         self.data_log.deflections.append(self.deflection)
         self.data_log.thermal_frames.append(thermal_arr)
-        self.data_log.damping_estimates.append(self.vel_opt.thermal_controller.tool_damping_estimate)
-        self.data_log.width_constant_estimates.append(self.vel_opt.thermal_controller.width_constant_estimate)
+        self.data_log.damping_estimates.append(self.vel_opt.thermal_controller.d_hat)
+        # self.data_log.width_constant_estimates.append(self.vel_opt.thermal_controller.width_constant_estimate)
 
+        self.data_log.a_hats.append(self.vel_opt.thermal_controller.a_hat)
+        self.data_log.b_hats.append(self.vel_opt.thermal_controller.b_hat)
+        self.data_log.width_estimates.append(self.vel_opt.thermal_controller.width_estimate)
 
     def save_video_frame(self, color_frame):
         self.video_save.write(color_frame)
@@ -227,15 +234,19 @@ class ExperimentManager:
             if self.video_save is not None:
                 self.save_video_frame(color_frame)
 
-            _, ellipse = self.send_thermal_frame_to_velopt(self.vel_opt.pid_velocity, thermal_arr)
+            try:
+                _, ellipse = self.send_thermal_frame_to_velopt(self.vel_opt.controller_v, thermal_arr)
+            except LinAlgError as e:
+                print("LinAlgError:", e)
+                break
             if width := (self.vel_opt.width / self.thermal_px_per_mm) < 0.1:
                 cv.putText(color_frame, "Warning: Tool may not be touching tissue!", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                 self.vel_opt.reset_tool_deflection()
             elif width > 10:
                 cv.putText(color_frame, "Warning: Width is greater than 10 mm, excess tissue damage may occur.", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             if self.adaptive_velocity:
-                ret = self.set_speed(self.vel_opt.pid_velocity)
-                if self.vel_opt.pid_velocity < 1.5:
+                ret = self.set_speed(self.vel_opt.controller_v)
+                if self.vel_opt.controller_v < 1.5:
                     self.vel_opt.reset_tool_deflection()
             else:
                 ret = self.set_speed(self.const_velocity)
@@ -247,7 +258,7 @@ class ExperimentManager:
             if self.debug:
                 # print(f"v: {self.qs.v:.2f} mm/s, Width: {self.qs.width / self.thermal_px_per_mm:.2f} mm, Deflection: {self.qs.deflection / self.thermal_px_per_mm:.2f} mm")
                 if self.adaptive_velocity:
-                    self.logger.debug(f"Velocity: {self.vel_opt.pid_velocity:.2f} mm/s")
+                    self.logger.debug(f"Velocity: {self.vel_opt.controller_v:.2f} mm/s")
                 else:
                     self.logger.debug(f"Velocity: {self.const_velocity} mm/s")
             # print(f"Tool pos: {self.vel_opt.tool_tip_pos}")
@@ -255,7 +266,7 @@ class ExperimentManager:
                                                   ellipse,
                                                   self.deflection,
                                                   self.vel_opt.width / self.thermal_px_per_mm,
-                                                  self.vel_opt.pid_velocity,
+                                                  self.vel_opt.controller_v,
                                                   self.vel_opt.tool_tip_pos)
             cv.imshow("Thermal Camera", color_frame)
             key = cv.waitKey(1) & 0xFF
@@ -274,7 +285,7 @@ class ExperimentManager:
         self._end_experiment()
 
     def plot(self):
-        fig, axs = plt.subplots(nrows=5, ncols=1)
+        fig, axs = plt.subplots(nrows=3, ncols=1)
         axs[0].plot(self.data_log.widths)
         axs[0].set_title("Width vs Time")
         axs[0].set_xlabel("Time (samples)")
@@ -286,28 +297,40 @@ class ExperimentManager:
         axs[2].plot(self.data_log.deflections)
         axs[2].set_title("Deflection vs Time")
         axs[2].set_ylabel("Deflection (mm)")
-        axs[3].plot(self.data_log.damping_estimates)
-        axs[3].set_ylabel("Damping Estimate")
-        axs[4].plot(self.data_log.width_constant_estimates)
-        axs[4].set_title("Width Constant Estimates vs Time")
-        axs[4].set_ylabel("Width Constant Estimate")
-        axs[4].set_xlabel("Time (samples)")
+
+        fig, axs = plt.subplots(nrows=4, ncols=1)
+        axs[0].plot(self.data_log.damping_estimates)
+        axs[0].set_ylabel("Damping Estimate")
+        axs[1].plot(self.data_log.a_hats)
+        axs[1].set_title("a_hat")
+        axs[1].set_ylabel("a_hat")
+        axs[2].plot(self.data_log.b_hats)
+        axs[2].set_title("b_hat")
+        axs[2].set_ylabel("b_hat")
+        axs[3].plot(self.data_log.width_estimates)
+        axs[3].set_title("Width Estimates")
+        axs[3].set_ylabel("Width Estimate (mm)")
+
         plt.show()
 
 class VirtualExperimentManager(ExperimentManager):
     def __init__(self, data_save: LoggingData, velopt, debug: bool=False, adaptive_velocity: bool =True, const_velocity: float or None =None):
         super().__init__(None, velopt, None, False, debug, adaptive_velocity, const_velocity)
         self.data_save: LoggingData = data_save
-        self.width_constant_estimates = [self.vel_opt.thermal_controller.width_constant_estimate]
-        self.width_predictions = [self.vel_opt.thermal_controller.width_constant_estimate * self.vel_opt.pid_velocity]
+        self.a_hats = [self.vel_opt.thermal_controller.a_hat]
+        self.b_hats = [self.vel_opt.thermal_controller.b_hat]
+        self.d_hats = [self.vel_opt.thermal_controller.d_hat]
+        self.width_predictions = [self.vel_opt.thermal_controller.width_estimate]
         self.optimized_vels = []
 
     def run_experiment(self):
         for vel, width, deflection, thermal_frame, pos, damping_estimate in self.data_save:
-            self.vel_opt.thermal_controller.update(vel, deflection, width, 0, 0)
-            self.width_constant_estimates.append(self.vel_opt.thermal_controller.width_constant_estimate)
-            self.width_predictions.append(self.vel_opt.thermal_controller.width_constant_estimate * vel)
+            self.vel_opt.thermal_controller.update(vel, deflection, width)
+            self.width_predictions.append(self.vel_opt.thermal_controller.width_estimate)
             self.optimized_vels.append(self.vel_opt.thermal_controller.v)
+            self.a_hats.append(self.vel_opt.thermal_controller.a_hat)
+            self.b_hats.append(self.vel_opt.thermal_controller.b_hat)
+            self.d_hats.append(self.vel_opt.thermal_controller.d_hat)
 
     def plot(self):
         fig, axs = plt.subplots(nrows=3, ncols=1)
@@ -333,17 +356,17 @@ class VirtualExperimentManager(ExperimentManager):
         axs[2].plot(deflection_pred - self.data_save.deflections)
         axs[2].set_title("Deflection Error vs Time")
         axs[2].set_ylabel("Deflection")
-        fig, axs = plt.subplots(nrows=3, ncols=1)
-        axs[0].plot(self.width_constant_estimates)
-        axs[0].set_title("Width Constants vs Time")
-        axs[0].set_ylabel("Width Constant")
-        axs[1].plot(self.width_predictions)
-        axs[1].set_title("Width Predictions vs Time")
-        axs[1].set_ylabel("Width Prediction")
-        width_error = np.array(self.width_predictions) - np.array(self.data_save.widths)
-        axs[2].plot(width_error)
-        axs[2].set_title("Width Error vs Time")
-        axs[2].set_ylabel("Width Error")
+        fig, axs = plt.subplots(nrows=4, ncols=1)
+        axs[0].plot(self.a_hats)
+        axs[0].set_title("a")
+        axs[1].plot(self.b_hats)
+        axs[1].set_title("b")
+        axs[2].plot(self.d_hats)
+        axs[2].set_title("d")
+        axs[3].plot(self.width_predictions)
+        axs[3].set_title("Width Predictions vs Time")
+        axs[3].set_ylabel("Width Prediction")
+
         # fig, ax = plt.subplots()
         # ax.plot(1/np.array(self.data_save.velocities))
         # ax.plot(np.array(self.data_save.widths))
