@@ -19,11 +19,11 @@ if __name__ == "__main__":
         print(f"Constant velocity: {constant_velocity} mm/s")
     em = ExperimentManager(testbed=tb,
                            velopt=velopt,
-                           video_save=True,
+                           video_save=False,
                            debug=False,
                            t3=t3,
                            adaptive_velocity=adaptive_velocity == "y",
                            const_velocity=constant_velocity)
     em.thermal_px_per_mm = thermal_px_per_mm
     em.run_experiment()
-    em.plot()
+    # em.plot()

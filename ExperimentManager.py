@@ -7,6 +7,8 @@ import pickle as pkl
 import cmapy
 from filterpy.kalman import KalmanFilter
 from dataclasses import dataclass, field
+plt.ion()
+from matplotlib.animation import FuncAnimation, FFMpegWriter, ImageMagickWriter
 
 
 def thermal_frame_to_color(thermal_frame):
@@ -122,7 +124,7 @@ class ExperimentManager:
             print("Skipping homing.")
 
         ret, thermal_arr, raw_frame, _ = self.get_t3_frame()
-        color_frame = thermal_frame_to_color(thermal_arr)
+        thermal_frame_to_color(thermal_arr)
 
         start_input = input("Ensure tool is on and touching tissue. Press Enter to start the experiment or 'q' to quit: ")
         if start_input == 'q':
@@ -201,7 +203,7 @@ class ExperimentManager:
 
         self.data_log.a_hats.append(self.vel_opt.thermal_controller.a_hat)
         self.data_log.b_hats.append(self.vel_opt.thermal_controller.b_hat)
-        self.data_log.width_estimates.append(self.vel_opt.thermal_controller.width_estimate)
+        self.data_log.width_estimates.append(self.vel_opt.thermal_controller.width_estimate / self.thermal_px_per_mm)
 
     def save_video_frame(self, color_frame):
         self.video_save.write(color_frame)
@@ -225,7 +227,10 @@ class ExperimentManager:
         on the screen.
         """
         self._prepare_experiment()
+        # gif_writer = ImageMagickWriter(fps=10)
+        gif_writer = FFMpegWriter(fps=10)
         print("Starting experiment...")
+        n_loops = 0
         while True:
             ret, thermal_arr, raw_frame, _ = self.get_t3_frame()
             color_frame = thermal_frame_to_color(thermal_arr)
@@ -244,7 +249,7 @@ class ExperimentManager:
                 cv.putText(color_frame, "Warning: Width is greater than 10 mm, excess tissue damage may occur.", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             if self.adaptive_velocity:
                 ret = self.set_speed(self.vel_opt.controller_v)
-                if self.vel_opt.controller_v < 1.5:
+                if self.vel_opt.controller_v < 1.01:
                     self.vel_opt.reset_tool_deflection()
             else:
                 ret = self.set_speed(self.const_velocity)
@@ -266,24 +271,32 @@ class ExperimentManager:
                                                   self.vel_opt.width / self.thermal_px_per_mm,
                                                   self.vel_opt.controller_v,
                                                   self.vel_opt.tool_tip_pos)
-            cv.imshow("Thermal Camera", color_frame)
-            key = cv.waitKey(1) & 0xFF
-            if key == ord('q'):
-                self.testbed.stop()
-                break
+
 
             pos = self.testbed.get_position()
             self.data_log.positions.append(pos)
-            if not ret or pos == -1:
-                print(ret, pos)
+            self.vel_opt.plot(n_loops)
+            plt.pause(0.0001)
+            cv.imshow("Thermal Camera", color_frame)
+            key = cv.waitKey(1) & 0xFF
+            if key == ord('q') or not ret or pos == -1:
                 break
+            n_loops += 1
 
+        self.testbed.stop()
         print(f"Avg Width: {np.mean(self.data_log.widths):.2f} mm")
         print(f"Avg Velocity: {np.mean(self.data_log.velocities):.2f} mm/s")
+        if n_loops > 1:
+            save = input("Save gif? (y/n): ").lower().strip()
+            if save == 'y':
+                anim = FuncAnimation(self.vel_opt.fig, self.vel_opt.plot, frames=n_loops, repeat=False)
+                print("Creating gif...")
+                anim.save(f'logs/MPC_{self.date.strftime("%Y-%m-%d-%H:%M")}.gif', writer=gif_writer)
         self._end_experiment()
 
+
     def plot(self):
-        fig, axs = plt.subplots(nrows=3, ncols=1)
+        fig, axs = plt.subplots(nrows=3, ncols=1, sharex=True)
         axs[0].plot(self.data_log.widths)
         axs[0].set_title("Width vs Time")
         axs[0].set_xlabel("Time (samples)")
@@ -296,7 +309,7 @@ class ExperimentManager:
         axs[2].set_title("Deflection vs Time")
         axs[2].set_ylabel("Deflection (mm)")
 
-        fig, axs = plt.subplots(nrows=4, ncols=1)
+        fig, axs = plt.subplots(nrows=4, ncols=1, sharex=True)
         axs[0].plot(self.data_log.damping_estimates)
         axs[0].set_ylabel("Damping Estimate")
         axs[1].plot(self.data_log.a_hats)
@@ -323,12 +336,15 @@ class VirtualExperimentManager(ExperimentManager):
 
     def run_experiment(self):
         for vel, width, deflection, thermal_frame, pos, damping_estimate in self.data_save:
+            stddev = np.std(thermal_frame)
             self.vel_opt.thermal_controller.update(vel, deflection, width)
             self.width_predictions.append(self.vel_opt.thermal_controller.width_estimate)
             self.optimized_vels.append(self.vel_opt.thermal_controller.v)
             self.a_hats.append(self.vel_opt.thermal_controller.a_hat)
             self.b_hats.append(self.vel_opt.thermal_controller.b_hat)
             self.d_hats.append(self.vel_opt.thermal_controller.d_hat)
+            self.vel_opt.plot()
+            plt.pause(0.01)
 
     def plot(self):
         fig, axs = plt.subplots(nrows=3, ncols=1)
