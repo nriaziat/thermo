@@ -53,7 +53,7 @@ def plot_data_log(file: str | PathLike, ax: plt.Axes):
     ax[3].plot(position, damping_estimates, color)
     ax[3].set_title("Damping Estimates")
     ax[3].set_ylabel("Damping Estimate")
-    ax[4].plot(position, data.a_hats, color)
+    ax[4].plot(position, data.q_hats, color)
     ax[4].set_title("a_hat")
     ax[4].set_ylabel("a_hat")
     ax[5].plot(position, data.b_hats, color)

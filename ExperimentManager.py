@@ -9,6 +9,8 @@ from filterpy.kalman import KalmanFilter
 from dataclasses import dataclass, field
 plt.ion()
 from matplotlib.animation import FuncAnimation, FFMpegWriter, ImageMagickWriter
+import matplotlib as mpl
+mpl.set_loglevel('info')
 
 
 def thermal_frame_to_color(thermal_frame):
@@ -25,7 +27,7 @@ class LoggingData:
     thermal_frames: list[np.ndarray] = field(default_factory=list)
     positions: list[float] = field(default_factory=list)
     damping_estimates: list[float] = field(default_factory=list)
-    a_hats: list[float] = field(default_factory=list)
+    q_hats: list[float] = field(default_factory=list)
     b_hats: list[float] = field(default_factory=list)
     width_estimates: list[float] = field(default_factory=list)
 
@@ -201,7 +203,7 @@ class ExperimentManager:
         self.data_log.damping_estimates.append(self.vel_opt.thermal_controller.d_hat)
         # self.data_log.width_constant_estimates.append(self.vel_opt.thermal_controller.width_constant_estimate)
 
-        self.data_log.a_hats.append(self.vel_opt.thermal_controller.a_hat)
+        self.data_log.q_hats.append(self.vel_opt.thermal_controller.q_hat)
         self.data_log.b_hats.append(self.vel_opt.thermal_controller.b_hat)
         self.data_log.width_estimates.append(self.vel_opt.thermal_controller.width_estimate / self.thermal_px_per_mm)
 
@@ -227,8 +229,8 @@ class ExperimentManager:
         on the screen.
         """
         self._prepare_experiment()
-        # gif_writer = ImageMagickWriter(fps=10)
-        gif_writer = FFMpegWriter(fps=10)
+        gif_writer = ImageMagickWriter(fps=10)
+        # gif_writer = FFMpegWriter(fps=10)
         print("Starting experiment...")
         n_loops = 0
         while True:
@@ -275,7 +277,6 @@ class ExperimentManager:
 
             pos = self.testbed.get_position()
             self.data_log.positions.append(pos)
-            self.vel_opt.plot(n_loops)
             plt.pause(0.0001)
             cv.imshow("Thermal Camera", color_frame)
             key = cv.waitKey(1) & 0xFF
@@ -284,14 +285,14 @@ class ExperimentManager:
             n_loops += 1
 
         self.testbed.stop()
+        plt.show()
         print(f"Avg Width: {np.mean(self.data_log.widths):.2f} mm")
         print(f"Avg Velocity: {np.mean(self.data_log.velocities):.2f} mm/s")
-        if n_loops > 1:
-            save = input("Save gif? (y/n): ").lower().strip()
-            if save == 'y':
-                anim = FuncAnimation(self.vel_opt.fig, self.vel_opt.plot, frames=n_loops, repeat=False)
-                print("Creating gif...")
-                anim.save(f'logs/MPC_{self.date.strftime("%Y-%m-%d-%H:%M")}.gif', writer=gif_writer)
+        save = input("Save gif? (y/n): ").lower().strip()
+        if save == 'y':
+            print("Creating gif...")
+            self.vel_opt.anim.save(f'logs/MPC_{self.date.strftime("%Y-%m-%d-%H:%M")}.gif', writer=gif_writer,
+                                   progress_callback=lambda i, n: print(f'Saving frame {i} of {n}'))
         self._end_experiment()
 
 
@@ -312,7 +313,7 @@ class ExperimentManager:
         fig, axs = plt.subplots(nrows=4, ncols=1, sharex=True)
         axs[0].plot(self.data_log.damping_estimates)
         axs[0].set_ylabel("Damping Estimate")
-        axs[1].plot(self.data_log.a_hats)
+        axs[1].plot(self.data_log.q_hats)
         axs[1].set_title("a_hat")
         axs[1].set_ylabel("a_hat")
         axs[2].plot(self.data_log.b_hats)
@@ -328,65 +329,21 @@ class VirtualExperimentManager(ExperimentManager):
     def __init__(self, data_save: LoggingData, velopt, debug: bool=False, adaptive_velocity: bool =True, const_velocity: float or None =None):
         super().__init__(None, velopt, None, False, debug, adaptive_velocity, const_velocity)
         self.data_save: LoggingData = data_save
-        self.a_hats = [self.vel_opt.thermal_controller.a_hat]
-        self.b_hats = [self.vel_opt.thermal_controller.b_hat]
-        self.d_hats = [self.vel_opt.thermal_controller.d_hat]
-        self.width_predictions = [self.vel_opt.thermal_controller.width_estimate]
-        self.optimized_vels = []
+        # self.a_hats = [self.vel_opt.thermal_controller.a_hat]
+        # self.b_hats = [self.vel_opt.thermal_controller.b_hat]
+        # self.d_hats = [self.vel_opt.thermal_controller.d_hat]
+        # self.width_predictions = [self.vel_opt.thermal_controller.width_estimate]
+        # self.optimized_vels = []
 
     def run_experiment(self):
         for vel, width, deflection, thermal_frame, pos, damping_estimate in self.data_save:
-            stddev = np.std(thermal_frame)
             self.vel_opt.thermal_controller.update(vel, deflection, width)
-            self.width_predictions.append(self.vel_opt.thermal_controller.width_estimate)
-            self.optimized_vels.append(self.vel_opt.thermal_controller.v)
-            self.a_hats.append(self.vel_opt.thermal_controller.a_hat)
-            self.b_hats.append(self.vel_opt.thermal_controller.b_hat)
-            self.d_hats.append(self.vel_opt.thermal_controller.d_hat)
-            self.vel_opt.plot()
-            plt.pause(0.01)
-
-    def plot(self):
-        fig, axs = plt.subplots(nrows=3, ncols=1)
-        axs[0].plot(self.data_save.velocities)
-        axs[0].plot(self.optimized_vels)
-        axs[0].legend(["Actual Velocity", "Optimized Velocity"])
-        axs[0].set_title("Velocity vs Time")
-        axs[0].set_ylabel("Velocity (mm/s)")
-        axs[1].plot(self.data_save.widths)
-        axs[1].set_title("Width vs Time")
-        axs[1].set_ylabel("Width (mm)")
-        axs[2].plot(self.data_save.deflections)
-        axs[2].set_title("Deflection vs Time")
-        axs[2].set_ylabel("Deflection (mm)")
-        fig, axs = plt.subplots(nrows=3, ncols=1)
-        axs[0].plot(self.data_save.damping_estimates)
-        axs[0].set_title("Damping Estimates vs Time")
-        axs[0].set_ylabel("Damping Estimate")
-        deflection_pred = np.array(self.data_save.damping_estimates) * np.array(self.data_save.velocities)
-        axs[1].plot(deflection_pred)
-        axs[1].set_title("Deflection Prediction vs Time")
-        axs[1].set_ylabel("Deflection Prediction")
-        axs[2].plot(deflection_pred - self.data_save.deflections)
-        axs[2].set_title("Deflection Error vs Time")
-        axs[2].set_ylabel("Deflection")
-        fig, axs = plt.subplots(nrows=4, ncols=1)
-        axs[0].plot(self.a_hats)
-        axs[0].set_title("a")
-        axs[1].plot(self.b_hats)
-        axs[1].set_title("b")
-        axs[2].plot(self.d_hats)
-        axs[2].set_title("d")
-        axs[3].plot(self.width_predictions)
-        axs[3].set_title("Width Predictions vs Time")
-        axs[3].set_ylabel("Width Prediction")
-
-        # fig, ax = plt.subplots()
-        # ax.plot(1/np.array(self.data_save.velocities))
-        # ax.plot(np.array(self.data_save.widths))
-        # ax.plot(np.array(self.data_save.velocities) * np.array(self.data_save.widths))
-        # plt.legend(["1/Velocity", "Width", "Velocity * Width"])
-        plt.show()
+            # self.width_predictions.append(self.vel_opt.thermal_controller.width_estimate)
+            # self.optimized_vels.append(self.vel_opt.thermal_controller.v)
+            # self.a_hats.append(self.vel_opt.thermal_controller.a_hat)
+            # self.b_hats.append(self.vel_opt.thermal_controller.b_hat)
+            # self.d_hats.append(self.vel_opt.thermal_controller.d_hat)
+            plt.pause(0.001)
 
     def __del__(self):
         pass
