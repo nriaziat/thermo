@@ -9,9 +9,6 @@ from filterpy.kalman import KalmanFilter
 from dataclasses import dataclass, field
 plt.ion()
 from matplotlib.animation import FuncAnimation, FFMpegWriter, ImageMagickWriter
-import matplotlib as mpl
-mpl.set_loglevel('info')
-
 
 def thermal_frame_to_color(thermal_frame):
     norm_frame = cv.normalize(thermal_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
@@ -27,8 +24,8 @@ class LoggingData:
     thermal_frames: list[np.ndarray] = field(default_factory=list)
     positions: list[float] = field(default_factory=list)
     damping_estimates: list[float] = field(default_factory=list)
-    q_hats: list[float] = field(default_factory=list)
-    b_hats: list[float] = field(default_factory=list)
+    a_hats: list[float] = field(default_factory=list)
+    alpha_hats: list[float] = field(default_factory=list)
     width_estimates: list[float] = field(default_factory=list)
 
     def __iter__(self):
@@ -201,11 +198,9 @@ class ExperimentManager:
         self.data_log.deflections.append(self.deflection)
         self.data_log.thermal_frames.append(thermal_arr)
         self.data_log.damping_estimates.append(self.vel_opt.thermal_controller.d_hat)
-        # self.data_log.width_constant_estimates.append(self.vel_opt.thermal_controller.width_constant_estimate)
-
-        self.data_log.q_hats.append(self.vel_opt.thermal_controller.q_hat)
-        self.data_log.b_hats.append(self.vel_opt.thermal_controller.b_hat)
-        self.data_log.width_estimates.append(self.vel_opt.thermal_controller.width_estimate / self.thermal_px_per_mm)
+        self.data_log.a_hats.append(self.vel_opt.thermal_controller.a_hat)
+        self.data_log.alpha_hats.append(self.vel_opt.thermal_controller.alpha_hat)
+        self.data_log.width_estimates.append(self.vel_opt.thermal_controller.width_estimate)
 
     def save_video_frame(self, color_frame):
         self.video_save.write(color_frame)
@@ -244,7 +239,7 @@ class ExperimentManager:
             except ValueError as e:
                 print(e)
                 break
-            if width := (self.vel_opt.width / self.thermal_px_per_mm) < 0.1:
+            if width := (self.vel_opt.width / self.thermal_px_per_mm) < 0.1 or self.vel_opt.thermal_controller.alpha_hat < 1e-3:
                 cv.putText(color_frame, "Warning: Tool may not be touching tissue!", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                 self.vel_opt.reset_tool_deflection()
             elif width > 10:
@@ -277,6 +272,8 @@ class ExperimentManager:
 
             pos = self.testbed.get_position()
             self.data_log.positions.append(pos)
+            if self.vel_opt.thermal_controller.method == "mpc":
+                self.vel_opt.plot()
             plt.pause(0.0001)
             cv.imshow("Thermal Camera", color_frame)
             key = cv.waitKey(1) & 0xFF
@@ -286,13 +283,14 @@ class ExperimentManager:
 
         self.testbed.stop()
         plt.show()
+        plt.savefig(f"logs/plot_{self.date.strftime('%Y-%m-%d-%H:%M')}.png")
         print(f"Avg Width: {np.mean(self.data_log.widths):.2f} mm")
         print(f"Avg Velocity: {np.mean(self.data_log.velocities):.2f} mm/s")
-        save = input("Save gif? (y/n): ").lower().strip()
-        if save == 'y':
-            print("Creating gif...")
-            self.vel_opt.anim.save(f'logs/MPC_{self.date.strftime("%Y-%m-%d-%H:%M")}.gif', writer=gif_writer,
-                                   progress_callback=lambda i, n: print(f'Saving frame {i} of {n}'))
+        # save = input("Save gif? (y/n): ").lower().strip()
+        # if save == 'y':
+        #     print("Creating gif...")
+        #     self.vel_opt.anim.save(f'logs/MPC_{self.date.strftime("%Y-%m-%d-%H:%M")}.gif', writer=gif_writer,
+        #                            progress_callback=lambda i, n: print(f'Saving frame {i} of {n}'))
         self._end_experiment()
 
 
@@ -328,22 +326,25 @@ class ExperimentManager:
 class VirtualExperimentManager(ExperimentManager):
     def __init__(self, data_save: LoggingData, velopt, debug: bool=False, adaptive_velocity: bool =True, const_velocity: float or None =None):
         super().__init__(None, velopt, None, False, debug, adaptive_velocity, const_velocity)
+        if self.vel_opt.thermal_controller.method != "mpc":
+            plt.ioff()
+        else:
+            plt.ion()
         self.data_save: LoggingData = data_save
-        # self.a_hats = [self.vel_opt.thermal_controller.a_hat]
-        # self.b_hats = [self.vel_opt.thermal_controller.b_hat]
-        # self.d_hats = [self.vel_opt.thermal_controller.d_hat]
-        # self.width_predictions = [self.vel_opt.thermal_controller.width_estimate]
-        # self.optimized_vels = []
 
     def run_experiment(self):
         for vel, width, deflection, thermal_frame, pos, damping_estimate in self.data_save:
             self.vel_opt.thermal_controller.update(vel, deflection, width)
-            # self.width_predictions.append(self.vel_opt.thermal_controller.width_estimate)
-            # self.optimized_vels.append(self.vel_opt.thermal_controller.v)
-            # self.a_hats.append(self.vel_opt.thermal_controller.a_hat)
-            # self.b_hats.append(self.vel_opt.thermal_controller.b_hat)
-            # self.d_hats.append(self.vel_opt.thermal_controller.d_hat)
-            plt.pause(0.001)
+            # bin_frame = 255 * (thermal_frame > self.vel_opt.t_death).astype(np.uint8)
+            # cv.putText(bin_frame, f"Width: {width:.2f} mm", (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            # new_width = np.max(np.sum(thermal_frame > self.vel_opt.t_death, axis=0)) / self.thermal_px_per_mm / 2
+            # cv.putText(bin_frame, f"New Width: {new_width:.2f} mm", (10, 40), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            # cv.imshow("Thermal Camera", bin_frame)
+            # plt.pause(0.1)
+            # cv.waitKey(60)
+            self.vel_opt.plot()
+            plt.pause(0.0001)
+        plt.show()
 
     def __del__(self):
         pass
