@@ -18,18 +18,18 @@ def thermal_frame_to_color(thermal_frame):
 
 @dataclass
 class LoggingData:
-    widths: list[float] = field(default_factory=list)
+    widths_mm: list[float] = field(default_factory=list)
     velocities: list[float] = field(default_factory=list)
-    deflections: list[float] = field(default_factory=list)
+    deflections_mm: list[float] = field(default_factory=list)
     thermal_frames: list[np.ndarray] = field(default_factory=list)
-    positions: list[float] = field(default_factory=list)
+    positions_mm: list[float] = field(default_factory=list)
     damping_estimates: list[float] = field(default_factory=list)
     a_hats: list[float] = field(default_factory=list)
     alpha_hats: list[float] = field(default_factory=list)
     width_estimates: list[float] = field(default_factory=list)
 
     def __iter__(self):
-        return iter(zip(self.velocities, self.widths, self.deflections, self.thermal_frames, self.positions, self.damping_estimates))
+        return iter(zip(self.velocities, self.widths_mm, self.deflections_mm, self.thermal_frames, self.positions_mm, self.damping_estimates))
 
     def save(self, filename):
         with open(filename, "wb") as f:
@@ -95,7 +95,7 @@ class ExperimentManager:
         self.t3 = t3
 
         self.deflection_kf = KalmanFilter(dim_x=2, dim_z=1)
-        self.deflection = 0
+        self.deflection_mm = 0
         self.init_deflection_kf(0.5, 0.8)
 
     def __del__(self):
@@ -140,14 +140,14 @@ class ExperimentManager:
         @return: new_v, ellipse
         """
         self.deflection_kf.predict()
-        meas, ddeflection = self.vel_opt.update_tool_deflection(thermal_frame)
-        self.deflection_kf.update(meas/self.thermal_px_per_mm)
-        self.deflection = self.deflection_kf.x[0]
-        return self.vel_opt.update_velocity(v, thermal_frame, deflection=self.deflection)
+        meas_px, ddeflection = self.vel_opt.update_tool_deflection(thermal_frame)
+        self.deflection_kf.update(meas_px/self.thermal_px_per_mm)
+        self.deflection_mm = self.deflection_kf.x[0]
+        return self.vel_opt.update_velocity(v, thermal_frame, deflection_mm=self.deflection_mm)
 
     @property
     def thermal_deflection(self):
-        return self.deflection
+        return self.deflection_mm
 
     @property
     def thermal_tool_tip_estimate(self):
@@ -190,12 +190,12 @@ class ExperimentManager:
 
 
     def add_to_data_log(self, thermal_arr):
-        self.data_log.widths.append(self.vel_opt.width / self.thermal_px_per_mm)
+        self.data_log.widths_mm.append(self.vel_opt.width_mm)
         if self.adaptive_velocity:
-            self.data_log.velocities.append(self.vel_opt.controller_v)
+            self.data_log.velocities.append(self.vel_opt.controller_v_mm_s)
         else:
             self.data_log.velocities.append(self.const_velocity)
-        self.data_log.deflections.append(self.deflection)
+        self.data_log.deflections_mm.append(self.deflection_mm)
         self.data_log.thermal_frames.append(thermal_arr)
         self.data_log.damping_estimates.append(self.vel_opt.thermal_controller.d_hat)
         self.data_log.a_hats.append(self.vel_opt.thermal_controller.a_hat)
@@ -235,18 +235,19 @@ class ExperimentManager:
                 self.save_video_frame(color_frame)
 
             try:
-                _, ellipse = self.send_thermal_frame_to_velopt(self.vel_opt.controller_v, thermal_arr)
+                _, ellipse = self.send_thermal_frame_to_velopt(self.vel_opt.controller_v_mm_s, thermal_arr)
             except ValueError as e:
                 print(e)
                 break
-            if width := (self.vel_opt.width / self.thermal_px_per_mm) < 0.1 or self.vel_opt.thermal_controller.alpha_hat < 1e-3:
+            if width := (self.vel_opt.width_mm / self.thermal_px_per_mm) < 0.1 or self.vel_opt.thermal_controller.alpha_hat < 1e-3:
                 cv.putText(color_frame, "Warning: Tool may not be touching tissue!", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
                 self.vel_opt.reset_tool_deflection()
             elif width > 10:
                 cv.putText(color_frame, "Warning: Width is greater than 10 mm, excess tissue damage may occur.", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             if self.adaptive_velocity:
-                ret = self.set_speed(self.vel_opt.controller_v)
-                if self.vel_opt.controller_v < 1.01:
+                ret = self.set_speed(self.vel_opt.controller_v_mm_s)
+                if self.vel_opt.controller_v_mm_s < 1.01:
                     self.vel_opt.reset_tool_deflection()
             else:
                 ret = self.set_speed(self.const_velocity)
@@ -258,20 +259,20 @@ class ExperimentManager:
             if self.debug:
                 # print(f"v: {self.qs.v:.2f} mm/s, Width: {self.qs.width / self.thermal_px_per_mm:.2f} mm, Deflection: {self.qs.deflection / self.thermal_px_per_mm:.2f} mm")
                 if self.adaptive_velocity:
-                    self.logger.debug(f"Velocity: {self.vel_opt.controller_v:.2f} mm/s")
+                    self.logger.debug(f"Velocity: {self.vel_opt.controller_v_mm_s:.2f} mm/s")
                 else:
                     self.logger.debug(f"Velocity: {self.const_velocity} mm/s")
             # print(f"Tool pos: {self.vel_opt.tool_tip_pos}")
             color_frame = self.draw_info_on_frame(color_frame,
                                                   ellipse,
-                                                  self.deflection,
-                                                  self.vel_opt.width / self.thermal_px_per_mm,
-                                                  self.vel_opt.controller_v,
+                                                  self.deflection_mm,
+                                                  self.vel_opt.width_mm / self.thermal_px_per_mm,
+                                                  self.vel_opt.controller_v_mm_s,
                                                   self.vel_opt.tool_tip_pos)
 
 
             pos = self.testbed.get_position()
-            self.data_log.positions.append(pos)
+            self.data_log.positions_mm.append(pos)
             if self.vel_opt.thermal_controller.method == "mpc":
                 self.vel_opt.plot()
             plt.pause(0.0001)
@@ -284,7 +285,7 @@ class ExperimentManager:
         self.testbed.stop()
         plt.show()
         plt.savefig(f"logs/plot_{self.date.strftime('%Y-%m-%d-%H:%M')}.png")
-        print(f"Avg Width: {np.mean(self.data_log.widths):.2f} mm")
+        print(f"Avg Width: {np.mean(self.data_log.widths_mm):.2f} mm")
         print(f"Avg Velocity: {np.mean(self.data_log.velocities):.2f} mm/s")
         # save = input("Save gif? (y/n): ").lower().strip()
         # if save == 'y':
@@ -296,7 +297,7 @@ class ExperimentManager:
 
     def plot(self):
         fig, axs = plt.subplots(nrows=3, ncols=1, sharex=True)
-        axs[0].plot(self.data_log.widths)
+        axs[0].plot(self.data_log.widths_mm)
         axs[0].set_title("Width vs Time")
         axs[0].set_xlabel("Time (samples)")
         axs[0].set_ylabel("Width (mm)")
@@ -304,7 +305,7 @@ class ExperimentManager:
         axs[1].set_title("Velocity vs Time")
         axs[1].set_xlabel("Time (samples)")
         axs[1].set_ylabel("Velocity (mm/s)")
-        axs[2].plot(self.data_log.deflections)
+        axs[2].plot(self.data_log.deflections_mm)
         axs[2].set_title("Deflection vs Time")
         axs[2].set_ylabel("Deflection (mm)")
 
@@ -334,7 +335,7 @@ class VirtualExperimentManager(ExperimentManager):
 
     def run_experiment(self):
         for vel, width, deflection, thermal_frame, pos, damping_estimate in self.data_save:
-            self.vel_opt.thermal_controller.update(vel, deflection, width)
+            self.vel_opt.thermal_controller.update(deflection, width)
             # bin_frame = 255 * (thermal_frame > self.vel_opt.t_death).astype(np.uint8)
             # cv.putText(bin_frame, f"Width: {width:.2f} mm", (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             # new_width = np.max(np.sum(thermal_frame > self.vel_opt.t_death, axis=0)) / self.thermal_px_per_mm / 2
