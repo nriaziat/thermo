@@ -7,13 +7,12 @@ import pickle as pkl
 import cmapy
 from filterpy.kalman import KalmanFilter
 from dataclasses import dataclass, field
-plt.ion()
-from matplotlib.animation import FuncAnimation, FFMpegWriter, ImageMagickWriter
+from matplotlib import rcParams
+from matplotlib.animation import ImageMagickWriter
 
 def thermal_frame_to_color(thermal_frame):
     norm_frame = cv.normalize(thermal_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
     return cv.applyColorMap(norm_frame, cmapy.cmap('hot'))
-
 
 
 @dataclass
@@ -58,6 +57,16 @@ class ExperimentManager:
         # assert testbed is not None, "Testbed object cannot be None"
         assert velopt is not None, "Velocity Optimizer object cannot be None"
         assert const_velocity is None or adaptive_velocity is False, "Cannot have both adaptive and constant velocity"
+
+        plt.ion()
+
+        rcParams['text.usetex'] = True
+        rcParams['text.latex.preamble'] = r'\usepackage{amsmath} \usepackage{siunitx}'
+        rcParams['axes.grid'] = True
+        rcParams['lines.linewidth'] = 2.0
+        rcParams['axes.labelsize'] = 'xx-large'
+        rcParams['xtick.labelsize'] = 'xx-large'
+        rcParams['ytick.labelsize'] = 'xx-large'
 
         self.testbed = testbed
         self.date = datetime.datetime.now()
@@ -224,7 +233,7 @@ class ExperimentManager:
         on the screen.
         """
         self._prepare_experiment()
-        gif_writer = ImageMagickWriter(fps=10)
+        # gif_writer = ImageMagickWriter(fps=10)
         # gif_writer = FFMpegWriter(fps=10)
         print("Starting experiment...")
         n_loops = 0
@@ -247,28 +256,22 @@ class ExperimentManager:
                 cv.putText(color_frame, "Warning: Width is greater than 10 mm, excess tissue damage may occur.", (10, 80), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             if self.adaptive_velocity:
                 ret = self.set_speed(self.vel_opt.controller_v_mm_s)
-                if self.vel_opt.controller_v_mm_s < 1.01:
-                    self.vel_opt.reset_tool_deflection()
             else:
                 ret = self.set_speed(self.const_velocity)
-            if self.debug:
-                self.logger.debug(self.vel_opt.get_loggable_data())
 
             self.add_to_data_log(thermal_arr)
 
             if self.debug:
-                # print(f"v: {self.qs.v:.2f} mm/s, Width: {self.qs.width / self.thermal_px_per_mm:.2f} mm, Deflection: {self.qs.deflection / self.thermal_px_per_mm:.2f} mm")
                 if self.adaptive_velocity:
                     self.logger.debug(f"Velocity: {self.vel_opt.controller_v_mm_s:.2f} mm/s")
                 else:
                     self.logger.debug(f"Velocity: {self.const_velocity} mm/s")
-            # print(f"Tool pos: {self.vel_opt.tool_tip_pos}")
-            color_frame = self.draw_info_on_frame(color_frame,
-                                                  ellipse,
-                                                  self.deflection_mm,
-                                                  self.vel_opt.width_mm / self.thermal_px_per_mm,
-                                                  self.vel_opt.controller_v_mm_s,
-                                                  self.vel_opt.tool_tip_pos)
+            # color_frame = self.draw_info_on_frame(color_frame,
+            #                                       ellipse,
+            #                                       self.deflection_mm,
+            #                                       self.vel_opt.width_mm / self.thermal_px_per_mm,
+            #                                       self.vel_opt.controller_v_mm_s,
+            #                                       self.vel_opt.tool_tip_pos)
 
 
             pos = self.testbed.get_position()

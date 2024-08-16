@@ -6,10 +6,9 @@ from ThermalProcessing import OnlineVelocityOptimizer
 thermal_px_per_mm = 5.1337 # px/mm
 
 velopt = OnlineVelocityOptimizer(
-                                 t_death=45,
+                                 t_death_c=45,
                                  v_min=1,
-                                 v_max=15,
-                                    method="mpc")
+                                 v_max=15)
 
 if __name__ == "__main__":
     t3 = T3pro(port=0)

@@ -45,19 +45,22 @@ def plot_data_log(file: str | PathLike, ax: plt.Axes):
     cost = [cost_fun(w, d) for w, d in zip(data.widths_mm, data.deflections_mm)]
     cost[-1] += cost_fun(data.widths_mm[-1], 0)
     ax[0].plot(position, data.velocities, color)
-    ax[1].plot(position, np.array(data.widths_mm) * thermal_px_per_mm, color)
+    ax[1].plot(position, data.widths_mm, color)
     ax[2].plot(position, data.deflections_mm, color)
     if len(ax) == 4:
         ax[3].plot(position, np.cumsum(cost), color)
     return min_dist, exp_type
 
-def plot_log_dir(file_dir: str | PathLike = None, list_of_files: list[str | PathLike] = None):
+def plot_log_dir(file_dir: str | PathLike = None, list_of_files: list[str | PathLike] = None, plot_cost=False):
     """
     Plot the data log from an experiment.
     :param file_dir: str | PathLike - The paths to the data log files.
     :param list_of_files: list[str | PathLike] - A list of paths to the data log files.
     """
-    fig, axs = plt.subplots(3, 1)
+    if plot_cost:
+        fig, axs = plt.subplots(4, 1)
+    else:
+        fig, axs = plt.subplots(3, 1)
     exp_types = []
     if file_dir is not None:
         file_paths = [file_dir + "/" + f for f in listdir(file_dir) if f.endswith(".pkl") and f.startswith("data")]
@@ -108,8 +111,9 @@ def convert_old_data_log(old_log_path):
         pkl.dump(new_log, f)
 
 
-plot_log_dir(list_of_files=["../logs/data_adaptive_2024-08-15-11:46.pkl",
-                            "../logs/data_7.0mm-s_2024-08-15-11:56.pkl"])
+plot_log_dir(list_of_files=["../logs/data_adaptive_2024-08-15-15:15.pkl",
+                            "../logs/data_5.0mm-s_2024-08-15-15:24.pkl"],
+                plot_cost=True)
 
 
 
