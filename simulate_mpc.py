@@ -1,4 +1,4 @@
-from ThermalProcessing import ThermalController
+from ThermalProcessing import AdaptiveMPC
 import do_mpc
 import matplotlib.pyplot as plt
 
@@ -14,7 +14,7 @@ rcParams['xtick.labelsize'] = 'xx-large'
 rcParams['ytick.labelsize'] = 'xx-large'
 
 # Create a ThermalController object
-tc = ThermalController()
+tc = AdaptiveMPC()
 mpc_graphics = do_mpc.graphics.Graphics(tc.mpc.data)
 sim_graphics = do_mpc.graphics.Graphics(tc.simulator.data)
 

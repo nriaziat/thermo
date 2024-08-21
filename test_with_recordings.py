@@ -5,7 +5,7 @@ from control_experiment import velopt
 thermal_px_per_mm = 5.1337 # px/mm
 
 if __name__ == "__main__":
-    with open("logs/data_adaptive_2024-08-15-14:44.pkl", "rb") as f:
+    with open("logs/data_adaptive_2024-08-21-17:44.pkl", "rb") as f:
         data = pkl.load(f)
     em = VirtualExperimentManager(
             data_save=data,

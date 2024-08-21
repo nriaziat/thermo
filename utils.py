@@ -2,6 +2,12 @@ import numpy as np
 import cv2 as cv
 from casadi import fabs
 from functools import lru_cache
+import cmapy
+
+
+def thermal_frame_to_color(thermal_frame):
+    norm_frame = cv.normalize(thermal_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
+    return cv.applyColorMap(norm_frame, cmapy.cmap('hot'))
 
 def point_in_ellipse(x, y, ellipse) -> bool:
     """
