@@ -1,7 +1,6 @@
 import pyrealsense2 as rs
 import numpy as np
 import cv2 as cv
-import open3d as o3d
 from attr import dataclass
 
 
@@ -16,8 +15,13 @@ class PixelPoint:
     def __add__(self, other):
         return PixelPoint(self.x + other.x, self.y + other.y)
 
-    def asarray(self):
-        return np.array([self.x, self.y])
+    def __array__(self, dtype=None, copy=None):
+        if copy is False:
+            raise ValueError(
+                "`copy=False` isn't supported. A copy is always created."
+
+            )
+        return np.array([self.x, self.y], dtype=dtype, copy=True)
 
 @dataclass
 class RealPoint:
@@ -31,11 +35,13 @@ class RealPoint:
     def __sub__(self, other):
         return RealPoint(self.x - other.x, self.y - other.y, self.z - other.z)
 
-    def asarray(self):
-        return np.array([self.x, self.y, self.z])
+    def __array__(self, dtype=None, copy=None):
+        if copy is False:
+            raise ValueError(
+                "`copy=False` isn't supported. A copy is always created."
 
-    def __abs__(self):
-        return np.linalg.norm(self.asarray())
+            )
+        return np.array([self.x, self.y, self.z], dtype=dtype, copy=True)
 
 class RealsenseDeformationTracker:
     def __init__(self, max_num_points=3):
@@ -55,8 +61,6 @@ class RealsenseDeformationTracker:
         profile = self.pipeline.start(self.config)
         self.intr = profile.get_stream(
             rs.stream.color).as_video_stream_profile().get_intrinsics()
-        self.pinhole_camera_intrinsic = o3d.camera.PinholeCameraIntrinsic(
-            self.intr.width, self.intr.height, self.intr.fx, self.intr.fy, self.intr.ppx, self.intr.ppy)
         self.extrinsic = [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]]
         self.p0 = []
         self.total_def = 0
@@ -88,19 +92,6 @@ class RealsenseDeformationTracker:
         self.color_frame =np.asanyarray(self.color_frame.get_data())
         return True, self.color_frame.copy()
 
-    # def convert_rs_frames_to_pointcloud(self):
-    #     np_depth = np.asanyarray(self.aligned_depth_frame.get_data())
-    #     o3d_depth = o3d.geometry.Image(np_depth)
-    #
-    #     np_color = np.asanyarray(self.color_frame.get_data())
-    #     o3d_color = o3d.geometry.Image(np_color)
-    #
-    #     rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-    #         o3d_color, o3d_depth, depth_scale=4000.0, convert_rgb_to_intensity=False)
-    #     pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
-    #         rgbd, self.pinhole_camera_intrinsic, self.extrinsic)
-    #     return pcd
-
     def init_points(self, frame):
         hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
         mask = cv.inRange(hsv, self.lower, self.upper)
@@ -126,7 +117,7 @@ class RealsenseDeformationTracker:
         frame_gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
         if self.old_gray is None:
             self.old_gray = frame_gray.copy()
-        p0 = np.array([point.asarray() for point in self.current_px_points], dtype=np.float32).reshape(-1, 1, 2)
+        p0 = np.array([point for point in self.current_px_points], dtype=np.float32).reshape(-1, 1, 2)
         p1, st, err = cv.calcOpticalFlowPyrLK(self.old_gray, frame_gray, p0, None, **self._lk_params)
         if p1 is not None:
             self.current_points = []
@@ -148,8 +139,8 @@ class RealsenseDeformationTracker:
         if len(self.relaxed_points) == 0:
             self.init_points(frame)
         self.track_points(frame)
-        deflection = np.linalg.norm([abs(point1 - point2) for point1, point2 in zip(self.relaxed_points, self.current_points)])
-        return deflection/(np.sqrt(len(self.current_points)))
+        deflection = [np.linalg.norm(point1 - point2) for point1, point2 in zip(self.relaxed_points, self.current_points)]
+        return deflection
 
 
 if __name__ == "__main__":

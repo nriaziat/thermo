@@ -123,6 +123,35 @@ class Testbed:
             return False
         return True
 
+    def move_relative(self, distance: float) -> bool:
+        """
+        Move the testbed a relative distance.
+        :param distance: float - The distance to move in mm.
+        :return: bool - True if the testbed moved successfully.
+        """
+        ret = self.__send_serial_command(TestbedCommand(TestbedCommandType.INC_POS, distance))
+        if not ret:
+            print("Error sending move command")
+            return False
+        data = self.__read_serial()
+        if data is float:
+            if not np.isclose(data, distance, atol=0.01):
+                print(f"Distance not set correctly. Expected: {distance}, Got: {data}")
+                return False
+            return True
+        if data == TestbedResponse.ERROR:
+            print("Error moving")
+            self.stop()
+            return False
+        elif data == TestbedResponse.LEFT or data == TestbedResponse.RIGHT:
+            print("Endstop reached")
+            self.stop()
+            return False
+        elif data == TestbedResponse.HOMING:
+            print("Testbed state: ", data)
+            return False
+        return True
+
     def stop(self) -> bool:
         """
         Stop the testbed.

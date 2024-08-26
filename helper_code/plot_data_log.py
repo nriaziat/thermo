@@ -4,13 +4,14 @@ import numpy as np
 from numpy.core.numeric import argwhere
 from ExperimentManager import LoggingData
 from os import PathLike, listdir
+from VelocityOptimization import AdaptiveMPC
 
 thermal_px_per_mm = 5.1337 # px/mm
 
 plt.ioff()
 
 def cost_fun(w, d):
-    return w**2 + 4 * d**2
+    return AdaptiveMPC.qw * w**2 + AdaptiveMPC.qd * d**2
 
 
 def plot_data_log(file: str | PathLike, ax: plt.Axes):
@@ -36,9 +37,6 @@ def plot_data_log(file: str | PathLike, ax: plt.Axes):
     min_dist = position[-1]
     if min_dist is None:
         return -1, exp_type
-    if min_dist < 200:
-        return -1, exp_type
-    position = position[:argwhere(position > 200)[0][0]]
     data.velocities = data.velocities[:len(position)]
     data.widths_mm = data.widths_mm[:len(position)]
     data.deflections_mm = data.deflections_mm[:len(position)]
@@ -111,8 +109,8 @@ def convert_old_data_log(old_log_path):
         pkl.dump(new_log, f)
 
 
-plot_log_dir(list_of_files=["../logs/data_adaptive_2024-08-15-15:15.pkl",
-                            "../logs/data_5.0mm-s_2024-08-15-15:24.pkl"],
+plot_log_dir(list_of_files=["../logs/data_adaptive_2024-08-23-12:13.pkl",
+                            "../logs/data_7.0mm-s_2024-08-23-12:15.pkl"],
                 plot_cost=True)
 
 
