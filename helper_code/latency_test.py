@@ -26,7 +26,7 @@ if __name__ == "__main__":
         # cv.imshow("Thermal Camera", color_frame)
         # if cv.waitKey(1) & 0xFF == ord('q'):
         #     break
-        OVO.send_thermal_frame_to_velopt(0, raw_frame)
+        OVO.update_measurements(0, raw_frame)
         testbed.set_speed(0)
         t2 = time.time()
         ts.append(t2 - t1)

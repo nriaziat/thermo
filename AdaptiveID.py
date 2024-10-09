@@ -1,5 +1,4 @@
 
-
 def proj(theta: float, y: float)->float:
     if theta > 0:
         return y
@@ -50,16 +49,16 @@ class ScalarFirstOrderAdaptation:
         if self._regularize_input:
             measurement = measurement / (1+abs(measurement))
             u = u / (1+abs(u))
-        self.a += self.gamma_a * proj(self.a, -error * measurement)
+        self.a += -self.gamma_a * proj(self.a, -error * measurement)
         if self.a < 0:
             self.a = 0.01
-        self.b += self.gamma_b * proj(self.b, error * u)
+        self.b += -self.gamma_b * proj(self.b, error * u)
         return self.state_estimate, self.a, self.b
 
 class ScalarLinearAlgabraicAdaptation:
     def __init__(self, b: float, gamma: float=1e-2):
         """
-        Initialize the adaptive parameters
+        Initialize the adaptive parameters y= b u
         :param b: Initial b
         :param gamma: Learning rate for b
         """
@@ -80,5 +79,5 @@ class ScalarLinearAlgabraicAdaptation:
         self.state_estimate = self.b * u
         error = self.state_estimate - measurement
         # self.b += self.gamma * proj(self.b, -error * u)
-        self.b += self.gamma * -error * u / (1+abs(u))
+        self.b += -self.gamma * error * u / (1+abs(u))
         return self.b

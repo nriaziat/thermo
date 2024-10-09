@@ -12,6 +12,17 @@ def thermal_frame_to_color(thermal_frame):
     norm_frame = cv.normalize(thermal_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
     return cv.applyColorMap(norm_frame, cmapy.cmap('hot'))
 
+def draw_info_on_frame(frame, deflection, width, velocity, tool_tip_pos):
+    cv.putText(frame, f"Deflection: {deflection:.2f} mm",
+           (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv.putText(frame, f"Width: {width:.2f} mm",
+               (10, 40), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv.putText(frame, f"Velocity: {velocity:.2f} mm/s",
+               (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    if tool_tip_pos is not None:
+        cv.circle(frame, (int(tool_tip_pos[1]), int(tool_tip_pos[0])), 3, (0, 255, 0), -1)
+    return frame
+
 def point_in_ellipse(x, y, ellipse) -> bool:
     """
     Check if a point is inside the ellipse
@@ -63,18 +74,20 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> (float, tuple | No
         return 0, None
     # if cv.contourArea(hull) < 1:
     #     return 0, None
-    ellipse = cv.fitEllipse(hull)
-    w = ellipse[1][0] / 2
-    return w, ellipse
+    # ellipse = cv.fitEllipse(hull)
+    # w = ellipse[1][0] / 2
+    rect = cv.minAreaRect(hull)
+    (_, _), (width, height), angle = rect
+    w = min(width, height) / 2
+    return w, hull
 
-
-def find_tooltip(therm_frame: np.ndarray, t_death, last_tool_tip, ellipse=None) -> tuple | None:
+def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
     """
     Find the location of the tooltip
     :param therm_frame: Temperature field [C]
     :param t_death: Isotherm temperature [C]
-    :param last_tool_tip: Last known tool tip location
-    :param ellipse: Isotherm ellipse (optional)
+    # :param last_tool_tip: Last known tool tip location
+    # :param ellipse: Isotherm ellipse (optional)
     :return: x, y location of the tooltip [px]
     """
 
@@ -103,29 +116,23 @@ def ymax(alpha, u, Tc):
 
 class Plotter:
     def __init__(self, mpc_data: do_mpc.data.Data):
-        self.fig, self.axs = plt.subplots(6, sharex=False, figsize=(16, 9))
+        n_isotherms = mpc_data.data_fields['_x']
+        self.fig, self.axs = plt.subplots(3, sharex=False, figsize=(16, 9))
         for i in range(1, len(self.axs)-1):
             self.axs[i].sharex(self.axs[0])
             self.axs[i].tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
         self.line_plots = []
-
         self.graphics = do_mpc.graphics.Graphics(mpc_data)
-        self.graphics.add_line(var_type='_x', var_name='width', axis=self.axs[0])
-        self.graphics.add_line(var_type='_tvp', var_name='width_estimate', axis=self.axs[0])
-        self.graphics.add_line(var_type='_tvp', var_name='deflection_measurement', axis=self.axs[1])
-        self.graphics.add_line(var_type='_z', var_name='deflection', axis=self.axs[1])
-        self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[2])
-        self.graphics.add_line(var_type='_tvp', var_name='alpha', axis=self.axs[3])
-        self.graphics.add_line(var_type='_tvp', var_name='a', axis=self.axs[4])
-        self.graphics.add_line(var_type='_tvp', var_name='d', axis=self.axs[5])
+        for i in range(n_isotherms):
+            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0])
+        # self.graphics.add_line(var_type='_x', var_name=f'width_{n_isotherms//2}', axis=self.axs[0], color='r')
+        self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[1])
+        self.graphics.add_line(var_type='_tvp', var_name='d', axis=self.axs[2])
 
         self.axs[0].set_ylabel(r'$w~[\si[per-mode=fraction]{\milli\meter}]$')
-        self.axs[1].set_ylabel(r"$\delta~[\si[per-mode=fraction]{\milli\meter}]$")
-        self.axs[2].set_ylabel(r"$u~[\si[per-mode=fraction]{\milli\meter\per\second}]$")
-        self.axs[3].set_ylabel(r'$\hat{\alpha}$')
-        self.axs[4].set_ylabel(r'$\hat{a}$')
-        self.axs[5].set_ylabel(r'$\hat{d}$')
-        self.axs[5].set_xlabel('Time Step')
+        self.axs[1].set_ylabel(r"$u~[\si[per-mode=fraction]{\milli\meter\per\second}]$")
+        self.axs[2].set_ylabel(r'$\hat{d}$')
+        self.axs[2].set_xlabel('Time Step')
         self.fig.align_ylabels()
 
 

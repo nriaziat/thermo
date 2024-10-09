@@ -38,7 +38,7 @@ neutral_tip_pos = np.array(neutral_tip_pos)
 for i, (frame, defl) in enumerate(zip(therm_frames, aruco_defl)):
     norm_frame = cv.normalize(frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
 
-    qs.send_thermal_frame_to_velopt(0, frame)
+    qs.update_measurements(0, frame)
     tip = find_tooltip(frame, 50, (neutral_tip_pos[0], neutral_tip_pos[1]))
     if tip is None:
         continue

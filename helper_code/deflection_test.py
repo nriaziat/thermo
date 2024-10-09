@@ -10,7 +10,7 @@ from datetime import datetime
 t3 = T3pro(port=0)
 camera = cv.VideoCapture(4)
 tracker = ArucoTracker()
-em = ExperimentManager(camera=camera, t3=t3, adaptive_velocity=False)
+em = ExperimentManager(camera=camera, thermal_camera=t3, adaptive_velocity=False)
 
 init_pose = None
 deflection = 0
@@ -48,12 +48,12 @@ while True:
         neutral_point_str = input("Enter neutral pose coordinates x,y: ")
         neutral_point = (int(neutral_point_str.split(',')[1]), int(neutral_point_str.split(',')[0]))
         # print(f"Neutral point: {neutral_point}")
-        em.vel_opt.neutral_tip_pos = neutral_point
+        em.mpc.neutral_tip_pos = neutral_point
         em.set_speed(5)
     else:
         deflection = np.linalg.norm(tracker.kf.x[:2] - init_pose) / scale_factor
 
-    em.send_thermal_frame_to_velopt(0, thermal_arr)
+    em.update_measurements(0, thermal_arr)
     therm_deflection = em.thermal_deflection
     tool_pos = em.thermal_tool_tip_estimate
 

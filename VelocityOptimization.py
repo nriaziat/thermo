@@ -1,112 +1,101 @@
 from filterpy.kalman import KalmanFilter
 from filterpy.common import Q_discrete_white_noise
-from control import lqr
 import numpy as np
 import do_mpc
-from AdaptiveID import ScalarFirstOrderAdaptation, ScalarLinearAlgabraicAdaptation
 from utils import cv_isotherm_width, find_tooltip, isotherm_width, ymax
+from abc import ABC, abstractmethod
+
 
 class AdaptiveMPC:
 
-    qw = 1  # width cost
-    qd = 200  # deflection cost
-    r = 1e-8 # regularization term0
-    M = 25  # horizon
-    c_defl = 0.5  # deflection constant
+    thermal_px_per_mm = 5.1337
 
-
-    model_type = 'continuous'
-
-    def __init__(self,
-                 t_death_c: float,
-                 v_min,
-                 v_max,
-                 ):
+    def __init__(self, model: do_mpc.model.Model, t_death_c: float, v_min, v_max):
         """
         :param t_death_c: Isotherm temperature [C]
         :param v_min: minimum tool speed [mm/s]
         :param v_max: maximum tool speed [mm/s]
         """
+        super().__init__(model)
         self._tvp_template = None
         self.v_min = v_min
         self.v_max = v_max
         self.v = v_min
 
-        self._width_adaptation = ScalarFirstOrderAdaptation(0, 0.1, 0.2,
-                                                            1e-2, 1e-2,
-                                                            regularize_input=True)
+        # self._width_adaptation = ScalarFirstOrderAdaptation(0, 1, 0.2,
+        #                                                     1e-3, 1e-2,
+        #                                                     regularize_input=True)
         self._width_meas = 0
         # self._deflection_adaptation = FirstOrderAdaptation(0, 0.01, 1,
         #                                                    0, 1)
-        self._deflection_adaptation: ScalarFirstOrderAdaptation | ScalarLinearAlgabraicAdaptation  = ScalarLinearAlgabraicAdaptation(1, 1)
         self._deflection_meas = 0
 
-        self.thermal_px_per_mm = 5.1337
 
         k = 0.24 # W/M -K
         d = 50e-3 # M thickness
         q = 20 # W
         self.Tc = 2 * np.pi * k * d * (t_death_c - 25) / q
 
-    @property
-    def alpha_hat(self):
-        """
-        Thermal Diffusivity Estimate
-        """
-        return self._width_adaptation.b
-
-    @property
-    def a_hat(self):
-        """
-        Thermal Time Constant Estimate
-        """
-        return self._width_adaptation.a
-
-    @property
-    def width_hat_mm(self):
-        """
-        Isotherm Width Estimate [mm]
-        """
-        return self._width_adaptation.state_estimate
-
-    @property
-    def d_hat(self):
-        """
-        Tool Damping Estimate
-        """
-        return self._deflection_adaptation.b
-
-    @property
-    def deflection_hat_mm(self):
-        """
-        Tool Deflection Estimate [mm]
-        """
-        return self._deflection_adaptation.state_estimate
+    # @property
+    # def alpha_hat(self):
+    #     """
+    #     Thermal Diffusivity Estimate
+    #     """
+    #     return self._width_adaptation.b
+    #
+    # @property
+    # def a_hat(self):
+    #     """
+    #     Thermal Time Constant Estimate
+    #     """
+    #     return self._width_adaptation.a
+    #
+    # @property
+    # def width_hat_mm(self):
+    #     """
+    #     Isotherm Width Estimate [mm]
+    #     """
+    #     return self._width_adaptation.state_estimate
+    #
+    # @property
+    # def d_hat(self):
+    #     """
+    #     Tool Damping Estimate
+    #     """
+    #     return self._deflection_adaptation.b
+    #
+    # @property
+    # def deflection_hat_mm(self):
+    #     """
+    #     Tool Deflection Estimate [mm]
+    #     """
+    #     return self._deflection_adaptation.state_estimate
 
 
     def setup_mpc(self):
-        self.model = do_mpc.model.Model(model_type=self.model_type)
-        self._width = self.model.set_variable(var_type='_x', var_name='width', shape=(1, 1))  # isotherm width [mm]
-        self._u = self.model.set_variable(var_type='_u', var_name='u', shape=(1, 1))  # tool speed [mm/s]
-        self._a = self.model.set_variable(var_type='_tvp', var_name='a', shape=(1, 1))  # thermal time constant [s]
-        self._d = self.model.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))  # tool damping [s]
-        self._alpha = self.model.set_variable(var_type='_tvp', var_name='alpha', shape=(1, 1))  # thermal input constant [s]
-        if isinstance(self._deflection_adaptation, ScalarLinearAlgabraicAdaptation):
-            self._deflection = self.model.set_variable(var_type='_z', var_name='deflection', shape=(1, 1)) # deflection [mm]
-            self.model.set_alg('deflection', expr=self._deflection - self._d * np.exp(-self.c_defl / self._u))
-        else:
-            self._deflection = self.model.set_variable(var_type='_x', var_name='deflection', shape=(1, 1)) # deflection [mm]
-            self.model.set_rhs('deflection', -self._deflection_adaptation.a * self._deflection + self._d * self._u)
-
-        self._deflection_meas = self.model.set_variable(var_type='_tvp', var_name='deflection_measurement', shape=(1, 1)) # deflection [mm]
-        self._width_estimate = self.model.set_variable(var_type='_tvp', var_name='width_estimate', shape=(1, 1))
-
-        _, s, _ = lqr(-self.a_hat, self.alpha_hat, self.qw, self.r)
-        self.model.set_rhs('width', -self._a * self._width + self._alpha * ymax(1, self._u, self.Tc))
-        self.model.set_expression('terminal_cost', s * self._width**2)
-        self.model.set_expression('running_cost', self.qd * self._deflection**2 +
-                                  self.qw * self._width**2)
-        self.model.setup()
+        # self.model = do_mpc.model.Model(model_type=self.model_type)
+        # self._width = self.model.set_variable(var_type='_x', var_name='width', shape=(1, 1))  # isotherm width [mm]
+        # self._u = self.model.set_variable(var_type='_u', var_name='u', shape=(1, 1))  # tool speed [mm/s]
+        # self._actual_u = self.model.set_variable(var_type='_tvp', var_name='actual_u', shape=(1, 1))  # tool speed [mm/s]
+        # self._a = self.model.set_variable(var_type='_tvp', var_name='a', shape=(1, 1))  # thermal time constant [s]
+        # self._d = self.model.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))  # tool damping [s]
+        # self._alpha = self.model.set_variable(var_type='_tvp', var_name='alpha', shape=(1, 1))  # thermal input constant [s]
+        # if isinstance(self._deflection_adaptation, ScalarLinearAlgabraicAdaptation):
+        #     self._deflection = self.model.set_variable(var_type='_z', var_name='deflection', shape=(1, 1)) # deflection [mm]
+        #     self.model.set_alg('deflection', expr=self._deflection - self._d * np.exp(-self.c_defl / self._u))
+        # else:
+        #     self._deflection = self.model.set_variable(var_type='_x', var_name='deflection', shape=(1, 1)) # deflection [mm]
+        #     self.model.set_rhs('deflection', -self._deflection_adaptation.a * self._deflection + self._d * self._u)
+        #
+        # self._deflection_meas = self.model.set_variable(var_type='_tvp', var_name='deflection_measurement', shape=(1, 1)) # deflection [mm]
+        # self._width_estimate = self.model.set_variable(var_type='_tvp', var_name='width_estimate', shape=(1, 1))
+        #
+        # _, s, _ = lqr(-self.a_hat, self.alpha_hat, self.qw, self.r)
+        # self.model.set_rhs('width', -self._a * self._width + self.w_max/(np.pi/2) * np.arctan(self._alpha * ymax(1, self._u, self.Tc)))
+        # self.model.set_expression('terminal_cost', s * self._width**2)
+        # self.model.set_expression('running_cost', self.qd * (10 * self._deflection)**2 +
+        #                           self.qw * self._width**2)
+        # self.model.setup()
 
         self.mpc = do_mpc.controller.MPC(self.model)
         setup_mpc = {
@@ -132,7 +121,7 @@ class AdaptiveMPC:
         self.mpc.bounds['upper', '_u', 'u'] = self.v_max
 
         self.mpc.bounds['lower', '_x', 'width'] = 0
-        self.mpc.set_nl_cons('width', self._width, ub=5, soft_constraint=True)
+        self.mpc.set_nl_cons('width', self._width, ub=self.w_max, soft_constraint=True)
         if isinstance(self._deflection_adaptation, ScalarLinearAlgabraicAdaptation):
             self.mpc.bounds['lower', '_z', 'deflection'] = 0
             self.mpc.scaling['_z', 'deflection'] = 0.1
@@ -146,20 +135,21 @@ class AdaptiveMPC:
         self.mpc.scaling['_u', 'u'] = 1
 
         self._tvp_template = self.mpc.get_tvp_template()
-        self.mpc.set_tvp_fun(self.tvp_fun)
+        self.mpc.set_tvp_fun(self._tvp_fun)
         self.mpc.setup()
         self.mpc.set_initial_guess()
 
 
-    def tvp_fun(self, t_now):
-        self._tvp_template['_tvp', :] = np.array([self.a_hat if self.a_hat > 0 else 0,
+    def _tvp_fun(self, t_now):
+        self._tvp_template['_tvp', :] = np.array([self.v,
+                                                  self.a_hat if self.a_hat > 0 else 0,
                                                   self.d_hat if self.d_hat > 0 else 0,
                                                   self.alpha_hat if self.alpha_hat > 0 else 0,
                                                   self._deflection_meas,
                                                   self.width_hat_mm])
         return self._tvp_template
 
-    def find_speed(self, width_mm=None, deflection_mm=None) -> float:
+    def _find_speed(self, width_mm=None, deflection_mm=None) -> float:
         """
         Find the optimal tool speed using MPC
         """
@@ -183,10 +173,11 @@ class AdaptiveMPC:
         """
         self._width_meas = width_mm
         self._deflection_meas = deflection_mm
-        self._deflection_adaptation.update(deflection_mm, np.exp(-self.c_defl / self.v))
-        self._width_adaptation.update(width_mm, ymax(1, self.v, self.Tc))
+        if self.v > 0:
+            self._deflection_adaptation.update(deflection_mm, np.exp(-self.c_defl / self.v))
+            self._width_adaptation.update(width_mm, ymax(1, self.v, self.Tc))
 
-        self.v = self.find_speed()
+        self.v = self._find_speed()
 
         return self.v
 
