@@ -8,21 +8,30 @@ from datetime import datetime
 thermal_px_per_mm = 5.1337 # px/mm
 qw = 1  # width cost
 qd = 1 # deflection cost
-r = 0.01  # control change cost
+r = 0.00  # control change cost
 v_min = 1  # minimum velocity [mm/s]
 v_max = 10  # maximum velocity [mm/s]
 
 def mpc_loop(mpc, u0, frame, init_mpc):
     defl_px, _ = tipPos.update_with_measurement(frame)
     defl_mm = defl_px / thermal_px_per_mm
-    w = np.array([cv_isotherm_width(frame, temp)[0] / thermal_px_per_mm for temp in model.isotherm_temps])
+    w_mm = np.array([(cv_isotherm_width(frame, temp)[0] / thermal_px_per_mm) for temp in model.isotherm_temps])
     deflection_adaptation.update(defl_mm, u0)
-    if all(w > 1) and len(w) == len(set(w)):
+    if all(w_mm > 0) and len(w_mm) == len(set(w_mm)):
         if not init_mpc:
-            mpc.x0 = w
+            mpc.x0 = w_mm
             mpc.set_initial_guess()
             init_mpc = True
-        u0 = mpc.make_step(w).item()
+        u0 = mpc.make_step(w_mm).item()
+        # lb_violation = mpc.opt_x_num.cat <= mpc._lb_opt_x.cat
+        # ub_violation = mpc.opt_x_num.cat >= mpc._ub_opt_x.cat
+        # opt_labels = mpc.opt_x.labels()
+        # labels_lb_viol = np.array(opt_labels)[np.where(lb_violation)[0]]
+        # labels_ub_viol = np.array(opt_labels)[np.where(ub_violation)[0]]
+        # print(f"Lower bound violation: {labels_lb_viol}")
+        # print(f"Upper bound violation: {labels_ub_viol}")
+        # if len(labels_lb_viol) > 0 and len(labels_ub_viol) > 0:
+        #     input()
         plotter.plot()
         plt.pause(0.0001)
     return u0, init_mpc, defl_mm
@@ -59,19 +68,21 @@ if __name__ == "__main__":
     mpc = do_mpc.controller.MPC(model=model)
 
     ##############################
-    mpc.settings.n_horizon = 15
+    mpc.settings.n_horizon = 10
     mpc.settings.n_robust = 0
     mpc.settings.open_loop = 0
     mpc.settings.t_step = 1/24
     mpc.settings.state_discretization = 'collocation'
     mpc.settings.collocation_type = 'radau'
-    mpc.settings.collocation_deg = 2
-    mpc.settings.collocation_ni = 2
+    mpc.settings.collocation_deg = 3
+    mpc.settings.collocation_ni = 1
     mpc.settings.store_full_solution = True
-    mpc.settings.nlpsol_opts = {'ipopt.linear_solver': 'MA57',
-                                'ipopt.check_derivatives_for_naninf': 'yes',
-                                'ipopt.honor_original_bounds': 'yes',
-                                'ipopt.linear_system_scaling': 'mc19',
+    mpc.settings.nlpsol_opts = {'ipopt.linear_solver': 'MA97',
+                                # 'ipopt.bound_relax_factor': 0,
+                                # 'ipopt.mu_strategy': 'adaptive',
+                                # 'ipopt.ma57_automatic_scaling': 'yes',
+                                # 'ipopt.check_derivatives_for_naninf': 'yes',
+                                # 'ipopt.expect_infeasible_problem': 'yes',
                                 # 'monitor': 'nlp_g'
                                 }
     # mpc.settings.supress_ipopt_output()
@@ -85,9 +96,13 @@ if __name__ == "__main__":
     for i in range(model.n_isotherms):
         # mpc.scaling['_x', f'width_{i}'] = 1
         mpc.bounds['lower', '_x', f'width_{i}'] = 0
-        mpc.set_nl_cons(f'width_{i}_constr', model.isotherm_widths_mm[i], ub=25, soft_constraint=True)
+        # mpc.set_nl_cons(f'width_{i}', model.isotherm_widths_mm[i], ub=25, soft_constraint=True)
+        mpc.bounds['upper', '_x', f'width_{i}'] = 25
     mpc.bounds['lower', '_z', 'deflection'] = 0
     # mpc.scaling['_z', 'deflection'] = 0.1
+    # for i in range(model.n_isotherms - 1):
+    #     mpc.set_nl_cons(f'width_{i}_ordering_constr', model.isotherm_widths_mm[i] - model.isotherm_widths_mm[i+1], ub=0, soft_constraint=False)
+
     tvp_template = mpc.get_tvp_template()
     def tvp_fun(t_now):
         tvp_template['_tvp'] = np.array([model.deflection_mm, deflection_adaptation.b])
@@ -95,8 +110,6 @@ if __name__ == "__main__":
     mpc.set_tvp_fun(tvp_fun)
     mpc.u0 = v_min
     init_mpc = False
-    for i in range(model.n_isotherms - 1):
-        mpc.set_nl_cons(f'width_{i}_ordering_constr', model.isotherm_widths_mm[i] - model.isotherm_widths_mm[i+1], ub=0)
     mpc.setup()
 
     ## Setup plotting
@@ -128,6 +141,7 @@ if __name__ == "__main__":
         for frame in thermal_frames:
             u0, init_mpc, defl_mm = mpc_loop(mpc, u0, frame, init_mpc)
             model.deflection_mm = defl_mm
+
 
     elif real_or_virtual == 'r':
         data_log = dict(widths_mm=[], velocities=[], deflections_mm=[], thermal_frames=[], damping_estimates=[])

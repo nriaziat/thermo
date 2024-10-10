@@ -134,7 +134,7 @@ class Plotter:
         self.graphics = do_mpc.graphics.Graphics(mpc_data)
         isotherm_colors = ['lightcoral', 'orangered', 'orange']
         for i in range(n_isotherms):
-            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{isotherm_temps[i]:.2f}C', color=isotherm_colors[i])
+            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{isotherm_temps[i]:.2f}C', color=isotherm_colors[i%len(isotherm_colors)])
         self.graphics.add_line(var_type='_tvp', var_name='defl_meas', axis=self.axs[1], color='purple')
         self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[2], color='b')
         # self.graphics.add_line(var_type='_tvp', var_name='d', axis=self.axs[3])
