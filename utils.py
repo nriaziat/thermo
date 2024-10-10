@@ -78,7 +78,7 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> (float, tuple | No
     # w = ellipse[1][0] / 2
     rect = cv.minAreaRect(hull)
     (_, _), (width, height), angle = rect
-    w = min(width, height) / 2
+    w = min(width, height)
     return w, hull
 
 def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
@@ -115,7 +115,7 @@ def ymax(alpha, u, Tc):
     return fabs(4 * alpha / (u * exp_gamma) * F(Tc))
 
 class Plotter:
-    def __init__(self, mpc_data: do_mpc.data.Data):
+    def __init__(self, mpc_data: do_mpc.data.Data, isotherm_temps=None):
         n_isotherms = mpc_data.data_fields['_x']
         self.fig, self.axs = plt.subplots(3, sharex=False, figsize=(16, 9))
         for i in range(1, len(self.axs)-1):
@@ -124,12 +124,13 @@ class Plotter:
         self.line_plots = []
         self.graphics = do_mpc.graphics.Graphics(mpc_data)
         for i in range(n_isotherms):
-            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0])
+            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{isotherm_temps[i]:.2f}C')
         # self.graphics.add_line(var_type='_x', var_name=f'width_{n_isotherms//2}', axis=self.axs[0], color='r')
         self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[1])
         self.graphics.add_line(var_type='_tvp', var_name='d', axis=self.axs[2])
 
         self.axs[0].set_ylabel(r'$w~[\si[per-mode=fraction]{\milli\meter}]$')
+        self.axs[0].legend()
         self.axs[1].set_ylabel(r"$u~[\si[per-mode=fraction]{\milli\meter\per\second}]$")
         self.axs[2].set_ylabel(r'$\hat{d}$')
         self.axs[2].set_xlabel('Time Step')

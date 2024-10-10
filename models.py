@@ -91,12 +91,13 @@ class MultiIsothermModel(ElectrosurgeryModel):
     """
 
     Ta = 20  # Ambient Temperature [C]
-    P = 100  # Tool Power [W]
+    P = 50e2  # Tool Power [W]
     rho = 1090e-9  # tissue density [kg/mm^3]
     Cp = 3421  # tissue specific heat capacity [J/kgK]
     k = 0.49e-3  # tissue conductivity [W/mmK]
     alpha = k / (rho * Cp)  # thermal diffusivity [mm^2/s]
     c_defl = 0.1  # deflection damping constant [s]
+    t_death = 45  # death temperature [C]
 
     def __init__(self, n_isotherms: int):
         """
@@ -104,48 +105,53 @@ class MultiIsothermModel(ElectrosurgeryModel):
         :param dT: isotherm temperature step [C]
         """
         super().__init__()
-        self.isotherm_widths = []
+        self._isotherm_widths = []
         self.n_isotherms = n_isotherms
-        self.dT = (50 - self.Ta) / self.n_isotherms / 2
-        self.isotherm_temps = np.linspace(self.Ta + self.n_isotherms * self.dT,
-                                              self.Ta + self.dT,
-                                              self.n_isotherms)
+        self.dT = (self.t_death - self.Ta) / (np.ceil(self.n_isotherms / 2))
+        self._isotherm_temps = np.linspace(self.Ta + self.n_isotherms * self.dT,
+                                           self.Ta + self.dT,
+                                           self.n_isotherms)
+        print(f"Isotherm Levels: {self.isotherm_temps}")
         for i in range(self.n_isotherms):
-            self.isotherm_widths.append(self.set_variable(var_type='_x', var_name=f'width_{i}', shape=(1, 1))) # isotherm width [mm]
-        self.deflection = self.set_variable(var_type='_z', var_name='deflection', shape=(1, 1)) # deflection [mm]
+            self._isotherm_widths.append(self.set_variable(var_type='_x', var_name=f'width_{i}', shape=(1, 1))) # isotherm width [mm]
+        self._deflection = self.set_variable(var_type='_z', var_name='deflection', shape=(1, 1)) # deflection [mm]
         self._d = self.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))  # adaptive tool damping
-        self.velocity = self.set_variable(var_type='_u', var_name='u', shape=(1, 1))  # tool speed [mm/s]
-        L = 2 * self.alpha / self.velocity
-        S = 4 * self.alpha / self.velocity ** 2
-        self.set_alg('deflection', expr=self.deflection - self._d * np.exp(-self.c_defl / self.velocity))
+        self._velocity = self.set_variable(var_type='_u', var_name='u', shape=(1, 1))  # tool speed [mm/s]
+        L = 2 * self.alpha / self._velocity
+        S = 4 * self.alpha / self._velocity ** 2
+        self.set_alg('deflection', expr=self._deflection - self._d * np.exp(-self.c_defl / self._velocity))
 
-        self.set_rhs('width_0', (-2 * self.alpha / self.isotherm_widths[0]) * (self.isotherm_widths[1] / (self.isotherm_widths[1] - self.isotherm_widths[0])) +
-                     self.P * np.exp(-self.isotherm_widths[0] / L) / (np.pi * self.rho * self.Cp * self.dT * self.isotherm_widths[0] ** 2) *
-                     (1 + self.isotherm_widths[0] /L) -
-                     (self.isotherm_temps[0] - self.Ta) / (S * self.dT) * (self.isotherm_widths[1] - self.isotherm_widths[0]))
+        self.set_rhs('width_0', (-2 * self.alpha / self._isotherm_widths[0]) * (self._isotherm_widths[1] / (self._isotherm_widths[1] - self._isotherm_widths[0])) +
+                     self.P * np.exp(-self._isotherm_widths[0] / L) / (np.pi * self.rho * self.Cp * self.dT * self._isotherm_widths[0] ** 2) *
+                     (1 + self._isotherm_widths[0] / L) -
+                     (self.isotherm_temps[0] - self.Ta) / (S * self.dT) * (self._isotherm_widths[1] - self._isotherm_widths[0]))
         for i in range(1, self.n_isotherms - 1):
-            self.set_rhs(f'width_{i}', (-self.alpha / self.isotherm_widths[i]) *
-                         ((self.isotherm_widths[i + 1] / (self.isotherm_widths[i + 1] - self.isotherm_widths[i])) -
-                          (self.isotherm_widths[i - 1] / (self.isotherm_widths[i] - self.isotherm_widths[i - 1]))) -
+            self.set_rhs(f'width_{i}', (-self.alpha / self._isotherm_widths[i]) *
+                         ((self._isotherm_widths[i + 1] / (self._isotherm_widths[i + 1] - self._isotherm_widths[i])) -
+                          (self._isotherm_widths[i - 1] / (self._isotherm_widths[i] - self._isotherm_widths[i - 1]))) -
                          (self.isotherm_temps[i] - self.Ta) / (2 * S * self.dT) *
-                         (self.isotherm_widths[i + 1] - self.isotherm_widths[i - 1]))
-        self.set_rhs(f'width_{self.n_isotherms - 1}', (-self.alpha / self.isotherm_widths[-1]) *
-                        (self.isotherm_widths[-1] - 2 * self.isotherm_widths[-2]) / (self.isotherm_widths[-1] - self.isotherm_widths[-2]) -
-                        (self.isotherm_widths[-1] - self.isotherm_widths[-2]) / S)
+                         (self._isotherm_widths[i + 1] - self._isotherm_widths[i - 1]))
+        self.set_rhs(f'width_{self.n_isotherms - 1}', (-self.alpha / self._isotherm_widths[-1]) *
+                     (self._isotherm_widths[-1] - 2 * self._isotherm_widths[-2]) / (self._isotherm_widths[-1] - self._isotherm_widths[-2]) -
+                     (self._isotherm_widths[-1] - self._isotherm_widths[-2]) / S)
 
 
     def set_cost_function(self, qw: float, qd: float):
-        self.set_expression(expr_name='lterm', expr=qw * (self.isotherm_widths[self.n_isotherms // 2]) ** 2 + qd * self.deflection ** 2)
-        self.set_expression(expr_name='mterm', expr=qw * (self.isotherm_widths[self.n_isotherms // 2]) ** 2)
+        # self.set_expression(expr_name='lterm', expr=qw * (self.isotherm_widths[self.n_isotherms // 2]**2) + qd * self.deflection ** 2)
+        self.set_expression(expr_name='lterm', expr=qw * (sum(self._isotherm_widths[i] ** 2 for i in range(self.n_isotherms // 2 + 1)) - sum(self._isotherm_widths[i] ** 2 for i in range(self.n_isotherms // 2 + 1, self.n_isotherms))) + qd * self._deflection ** 2)
+        self.set_expression(expr_name='mterm', expr=qw * (sum(self._isotherm_widths[i] ** 2 for i in range(self.n_isotherms // 2 + 1)) - sum(self._isotherm_widths[i] ** 2 for i in range(self.n_isotherms // 2 + 1, self.n_isotherms))))
 
+    @property
     def deflection_mm(self) -> float:
-        return self.deflection
+        return self._deflection
 
+    @property
     def isotherm_widths_mm(self) -> float | np.ndarray[float]:
-        return self.isotherm_widths
+        return self._isotherm_widths
 
+    @property
     def isotherm_temps(self) -> np.ndarray[float]:
-        return self.isotherm_temps
+        return self._isotherm_temps
 
 
 class PseudoStaticModel(ElectrosurgeryModel):
