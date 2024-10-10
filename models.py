@@ -96,7 +96,7 @@ class MultiIsothermModel(ElectrosurgeryModel):
     Cp = 3421  # tissue specific heat capacity [J/kgK]
     k = 0.49e-3  # tissue conductivity [W/mmK]
     alpha = k / (rho * Cp)  # thermal diffusivity [mm^2/s]
-    c_defl = 0.1  # deflection damping constant [s]
+    c_defl = 0.5  # deflection damping constant [s]
     t_death = 45  # death temperature [C]
 
     def __init__(self, n_isotherms: int):
@@ -111,10 +111,12 @@ class MultiIsothermModel(ElectrosurgeryModel):
         self._isotherm_temps = np.linspace(self.Ta + self.n_isotherms * self.dT,
                                            self.Ta + self.dT,
                                            self.n_isotherms)
+        self._deflection_mm = 0
         print(f"Isotherm Levels: {self.isotherm_temps}")
         for i in range(self.n_isotherms):
             self._isotherm_widths.append(self.set_variable(var_type='_x', var_name=f'width_{i}', shape=(1, 1))) # isotherm width [mm]
         self._deflection = self.set_variable(var_type='_z', var_name='deflection', shape=(1, 1)) # deflection [mm]
+        self._defl_meas = self.set_variable(var_type='_tvp', var_name='defl_meas', shape=(1, 1))  # deflection measurement [mm/s]
         self._d = self.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))  # adaptive tool damping
         self._velocity = self.set_variable(var_type='_u', var_name='u', shape=(1, 1))  # tool speed [mm/s]
         L = 2 * self.alpha / self._velocity
@@ -137,13 +139,17 @@ class MultiIsothermModel(ElectrosurgeryModel):
 
 
     def set_cost_function(self, qw: float, qd: float):
-        # self.set_expression(expr_name='lterm', expr=qw * (self.isotherm_widths[self.n_isotherms // 2]**2) + qd * self.deflection ** 2)
-        self.set_expression(expr_name='lterm', expr=qw * (sum(self._isotherm_widths[i] ** 2 for i in range(self.n_isotherms // 2 + 1)) - sum(self._isotherm_widths[i] ** 2 for i in range(self.n_isotherms // 2 + 1, self.n_isotherms))) + qd * self._deflection ** 2)
-        self.set_expression(expr_name='mterm', expr=qw * (sum(self._isotherm_widths[i] ** 2 for i in range(self.n_isotherms // 2 + 1)) - sum(self._isotherm_widths[i] ** 2 for i in range(self.n_isotherms // 2 + 1, self.n_isotherms))))
+        self.set_expression(expr_name='lterm', expr=qw * (sum(self._isotherm_widths[i] for i in range(self.n_isotherms // 2 + 1))  - sum(self._isotherm_widths[i] for i in range(self.n_isotherms // 2 + 1, self.n_isotherms))) + qd * self._deflection)
+        self.set_expression(expr_name='mterm', expr=qw * (sum(self._isotherm_widths[i] for i in range(self.n_isotherms // 2 + 1))  - sum(self._isotherm_widths[i] for i in range(self.n_isotherms // 2 + 1, self.n_isotherms))) )
 
     @property
     def deflection_mm(self) -> float:
         return self._deflection
+
+    @deflection_mm.setter
+    def deflection_mm(self, value: float):
+        assert value >= 0, "Deflection must be non-negative"
+        self._deflection = value
 
     @property
     def isotherm_widths_mm(self) -> float | np.ndarray[float]:

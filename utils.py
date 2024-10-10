@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import do_mpc
 import pickle as pkl
 import matplotlib.pyplot as plt
+from matplotlib import rcParams
 
 def thermal_frame_to_color(thermal_frame):
     norm_frame = cv.normalize(thermal_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
@@ -116,24 +117,34 @@ def ymax(alpha, u, Tc):
 
 class Plotter:
     def __init__(self, mpc_data: do_mpc.data.Data, isotherm_temps=None):
+        plt.ion()
+        rcParams['text.usetex'] = True
+        rcParams['text.latex.preamble'] = r'\usepackage{amsmath} \usepackage{siunitx}'
+        rcParams['axes.grid'] = True
+        rcParams['lines.linewidth'] = 2.0
+        rcParams['axes.labelsize'] = 'xx-large'
+        rcParams['xtick.labelsize'] = 'xx-large'
+        rcParams['ytick.labelsize'] = 'xx-large'
         n_isotherms = mpc_data.data_fields['_x']
-        self.fig, self.axs = plt.subplots(3, sharex=False, figsize=(16, 9))
+        self.fig, self.axs = plt.subplots(3, sharex=True, figsize=(16, 9))
         for i in range(1, len(self.axs)-1):
             self.axs[i].sharex(self.axs[0])
             self.axs[i].tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
         self.line_plots = []
         self.graphics = do_mpc.graphics.Graphics(mpc_data)
+        isotherm_colors = ['lightcoral', 'orangered', 'orange']
         for i in range(n_isotherms):
-            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{isotherm_temps[i]:.2f}C')
-        # self.graphics.add_line(var_type='_x', var_name=f'width_{n_isotherms//2}', axis=self.axs[0], color='r')
-        self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[1])
-        self.graphics.add_line(var_type='_tvp', var_name='d', axis=self.axs[2])
+            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{isotherm_temps[i]:.2f}C', color=isotherm_colors[i])
+        self.graphics.add_line(var_type='_tvp', var_name='defl_meas', axis=self.axs[1], color='purple')
+        self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[2], color='b')
+        # self.graphics.add_line(var_type='_tvp', var_name='d', axis=self.axs[3])
 
         self.axs[0].set_ylabel(r'$w~[\si[per-mode=fraction]{\milli\meter}]$')
         self.axs[0].legend()
-        self.axs[1].set_ylabel(r"$u~[\si[per-mode=fraction]{\milli\meter\per\second}]$")
-        self.axs[2].set_ylabel(r'$\hat{d}$')
-        self.axs[2].set_xlabel('Time Step')
+        self.axs[1].set_ylabel(r'$d~[\si[per-mode=fraction]{\milli\meter}]$')
+        self.axs[2].set_ylabel(r"$u~[\si[per-mode=fraction]{\milli\meter\per\second}]$")
+        # self.axs[3].set_ylabel(r'$\hat{d}$')
+        self.axs[-1].set_xlabel(r'$t~[\si[per-mode=fraction]{\second}]$')
         self.fig.align_ylabels()
 
 
@@ -146,6 +157,9 @@ class Plotter:
             self.graphics.plot_results(t_ind)
             self.graphics.plot_predictions(t_ind)
             self.graphics.reset_axes()
+
+    def __del__(self):
+        plt.ioff()
 
 
 @dataclass

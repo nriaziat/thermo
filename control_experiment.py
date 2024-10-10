@@ -1,9 +1,7 @@
-import matplotlib.pyplot as plt
 from T3pro import T3pro
 from testbed import Testbed
 from models import *
 from AdaptiveID import *
-from matplotlib import rcParams
 from utils import *
 from datetime import datetime
 
@@ -19,16 +17,15 @@ def mpc_loop(mpc, u0, frame, init_mpc):
     defl_mm = defl_px / thermal_px_per_mm
     w = np.array([cv_isotherm_width(frame, temp)[0] / thermal_px_per_mm for temp in model.isotherm_temps])
     deflection_adaptation.update(defl_mm, u0)
-    if any(w < 1) or len(w) != len(set(w)):
-        return u0, init_mpc
-    if not init_mpc:
-        mpc.x0 = w
-        mpc.set_initial_guess()
-        init_mpc = True
-    u0 = mpc.make_step(w).item()
-    plotter.plot()
-    plt.pause(0.0001)
-    return u0, init_mpc
+    if all(w > 1) and len(w) == len(set(w)):
+        if not init_mpc:
+            mpc.x0 = w
+            mpc.set_initial_guess()
+            init_mpc = True
+        u0 = mpc.make_step(w).item()
+        plotter.plot()
+        plt.pause(0.0001)
+    return u0, init_mpc, defl_mm
 
 def add_to_data_log(data_log: dict, thermal_arr: np.array,
                     widths_mm: np.array,
@@ -47,14 +44,6 @@ def add_to_data_log(data_log: dict, thermal_arr: np.array,
 
 
 if __name__ == "__main__":
-    plt.ion()
-    rcParams['text.usetex'] = True
-    rcParams['text.latex.preamble'] = r'\usepackage{amsmath} \usepackage{siunitx}'
-    rcParams['axes.grid'] = True
-    rcParams['lines.linewidth'] = 2.0
-    rcParams['axes.labelsize'] = 'xx-large'
-    rcParams['xtick.labelsize'] = 'xx-large'
-    rcParams['ytick.labelsize'] = 'xx-large'
 
     ## Initialize the physical models
     model = MultiIsothermModel(n_isotherms=3)
@@ -70,7 +59,7 @@ if __name__ == "__main__":
     mpc = do_mpc.controller.MPC(model=model)
 
     ##############################
-    mpc.settings.n_horizon = 20
+    mpc.settings.n_horizon = 15
     mpc.settings.n_robust = 0
     mpc.settings.open_loop = 0
     mpc.settings.t_step = 1/24
@@ -90,18 +79,18 @@ if __name__ == "__main__":
 
 
     mpc.set_objective(mterm=model.aux['mterm'], lterm=model.aux['lterm'])
-    mpc.set_rterm(u=0.1)
+    mpc.set_rterm(u=r)
     mpc.bounds['lower', '_u', 'u'] = v_min
     mpc.bounds['upper', '_u', 'u'] = v_max
     for i in range(model.n_isotherms):
-        mpc.scaling['_x', f'width_{i}'] = 0.1
+        # mpc.scaling['_x', f'width_{i}'] = 1
         mpc.bounds['lower', '_x', f'width_{i}'] = 0
-        mpc.set_nl_cons(f'width_{i}_constr', model.isotherm_widths_mm[i], ub=50, soft_constraint=True)
+        mpc.set_nl_cons(f'width_{i}_constr', model.isotherm_widths_mm[i], ub=25, soft_constraint=True)
     mpc.bounds['lower', '_z', 'deflection'] = 0
-    mpc.scaling['_z', 'deflection'] = 0.1
+    # mpc.scaling['_z', 'deflection'] = 0.1
     tvp_template = mpc.get_tvp_template()
     def tvp_fun(t_now):
-        tvp_template['_tvp'] = deflection_adaptation.b
+        tvp_template['_tvp'] = np.array([model.deflection_mm, deflection_adaptation.b])
         return tvp_template
     mpc.set_tvp_fun(tvp_fun)
     mpc.u0 = v_min
@@ -137,7 +126,8 @@ if __name__ == "__main__":
             thermal_frames = data['thermal_frames']
 
         for frame in thermal_frames:
-            u0, init_mpc = mpc_loop(mpc, u0, frame, init_mpc)
+            u0, init_mpc, defl_mm = mpc_loop(mpc, u0, frame, init_mpc)
+            model.deflection_mm = defl_mm
 
     elif real_or_virtual == 'r':
         data_log = dict(widths_mm=[], velocities=[], deflections_mm=[], thermal_frames=[], damping_estimates=[])
@@ -164,21 +154,21 @@ if __name__ == "__main__":
                 info, lut = t3.info()
                 thermal_arr = lut[raw_frame]
                 thermal_frame_to_color(thermal_arr)
-                u0, init_mpc = mpc_loop(mpc, u0, thermal_arr, init_mpc)
+                u0, init_mpc, defl_mm = mpc_loop(mpc, u0, thermal_arr, init_mpc)
+                model.deflection_mm = defl_mm
                 add_to_data_log(data_log, thermal_arr, model.isotherm_widths_mm,
                                 tipPos.update_with_measurement(thermal_arr)[0] / thermal_px_per_mm,
                                 deflection_adaptation,
                                 adaptive_velocity,
                                 0 if adaptive_velocity else constant_velocity)
                 tb.set_speed(u0)
+            tb.set_speed(0)
 
     plt.show()
     if tb is not None:
         tb.stop()
     if t3 is not None:
         t3.release()
-    plt.ioff()
-    cv.destroyAllWindows()
     if real_or_virtual == "r":
         date = datetime.now()
         with open(f"logs/data_{experiment_type}_{date.strftime('%Y-%m-%d-%H:%M')}.pkl", "wb") as f:
