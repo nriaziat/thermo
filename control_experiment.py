@@ -4,19 +4,38 @@ from models import *
 from AdaptiveID import *
 from utils import *
 from datetime import datetime
+from enum import StrEnum
+import pandas as pd
+import warnings
+warnings.filterwarnings("ignore")
+
+class ExperimentType(StrEnum):
+    REAL = "r"
+    PRERECORDED = "p"
+    SIMULATED = "s"
+
+class SpeedMode(StrEnum):
+    ADAPTIVE = "adaptive"
+    CONSTANT = "constant"
 
 thermal_px_per_mm = 5.1337 # px/mm
 qw = 1  # width cost
-qd = 1 # deflection cost
-r = 0.00  # control change cost
-v_min = 1  # minimum velocity [mm/s]
+qd = 20 # deflection cost
+r = 0.001  # control change cost
+v_min = 0  # minimum velocity [mm/s]
 v_max = 10  # maximum velocity [mm/s]
 
-def mpc_loop(mpc, u0, frame, init_mpc):
+def mpc_loop(mpc, u0, frame, init_mpc, b=None):
     defl_px, _ = tipPos.update_with_measurement(frame)
     defl_mm = defl_px / thermal_px_per_mm
     w_mm = np.array([(cv_isotherm_width(frame, temp)[0] / thermal_px_per_mm) for temp in model.isotherm_temps])
-    deflection_adaptation.update(defl_mm, u0)
+    model._isotherm_width_measurement = w_mm
+    deflection_adaptation.update(defl_mm, np.exp(-model.c_defl / u0))
+    u_prime = (2 * model._material.alpha / u0) *np.sqrt(
+        u0 / (4 * np.pi * model._material.k * model._material.alpha * (model.t_death - model.Ta)))
+    thermal_adaptation.update(w_mm[0], u_prime)
+    if b is not None:
+        deflection_adaptation.b = b
     if all(w_mm > 0) and len(w_mm) == len(set(w_mm)):
         if not init_mpc:
             mpc.x0 = w_mm
@@ -36,46 +55,42 @@ def mpc_loop(mpc, u0, frame, init_mpc):
         plt.pause(0.0001)
     return u0, init_mpc, defl_mm
 
-def add_to_data_log(data_log: dict, thermal_arr: np.array,
+def add_to_data_log(data_log: pd.DataFrame, thermal_arr: np.array,
                     widths_mm: np.array,
                     deflection_mm: float,
                     adaptive_deflection_model: ScalarLinearAlgabraicAdaptation,
                     adaptive_velocity: bool = False,
                     const_velocity: float = None):
-    data_log['widths_mm'].append(widths_mm)
-    if adaptive_velocity:
-        data_log['velocities'].append(mpc.u0)
-    else:
-        data_log['velocities'].append(const_velocity)
-    data_log['deflections_mm'].append(deflection_mm)
-    data_log['thermal_frames'].append(thermal_arr)
-    data_log['damping_estimates'].append(adaptive_deflection_model.b)
+
+    data_log.loc[len(data_log)] = [widths_mm, mpc.u0 if adaptive_velocity else const_velocity, deflection_mm, thermal_arr, adaptive_deflection_model.b]
 
 
 if __name__ == "__main__":
 
-    ## Initialize the physical models
-    model = MultiIsothermModel(n_isotherms=3)
+    # Initialize the physical models
+    model = MultiIsothermModel(n_isotherms=3,
+                               material=hydrogelPhantom)
+    # model = PseudoStaticModel(material=hydrogelPhantom)
     model.set_cost_function(qw, qd)
     model.setup()
     tipPos = ToolTipKF(0.7)
 
     ## Initialize the parameter adaptation
-    # thermal_adaptation = ScalarFirstOrderAdaptation(x0=0, a0=0.1, b0=0.1)
-    deflection_adaptation = ScalarLinearAlgabraicAdaptation(b=0.1)
+    thermal_adaptation = ScalarLinearAlgabraicAdaptation(b=45, gamma=0.5)
+    deflection_adaptation = ScalarLinearAlgabraicAdaptation(b=0.1, gamma=0.5)
 
     ## Initialize the MPC controller
     mpc = do_mpc.controller.MPC(model=model)
 
     ##############################
-    mpc.settings.n_horizon = 10
+    mpc.settings.n_horizon = 5
     mpc.settings.n_robust = 0
     mpc.settings.open_loop = 0
     mpc.settings.t_step = 1/24
     mpc.settings.state_discretization = 'collocation'
     mpc.settings.collocation_type = 'radau'
-    mpc.settings.collocation_deg = 3
-    mpc.settings.collocation_ni = 1
+    mpc.settings.collocation_deg = 2
+    mpc.settings.collocation_ni = 2
     mpc.settings.store_full_solution = True
     mpc.settings.nlpsol_opts = {'ipopt.linear_solver': 'MA97',
                                 # 'ipopt.bound_relax_factor': 0,
@@ -97,7 +112,7 @@ if __name__ == "__main__":
         # mpc.scaling['_x', f'width_{i}'] = 1
         mpc.bounds['lower', '_x', f'width_{i}'] = 0
         # mpc.set_nl_cons(f'width_{i}', model.isotherm_widths_mm[i], ub=25, soft_constraint=True)
-        mpc.bounds['upper', '_x', f'width_{i}'] = 25
+        # mpc.bounds['upper', '_x', f'width_{i}'] = 25
     mpc.bounds['lower', '_z', 'deflection'] = 0
     # mpc.scaling['_z', 'deflection'] = 0.1
     # for i in range(model.n_isotherms - 1):
@@ -105,46 +120,83 @@ if __name__ == "__main__":
 
     tvp_template = mpc.get_tvp_template()
     def tvp_fun(t_now):
-        tvp_template['_tvp'] = np.array([model.deflection_mm, deflection_adaptation.b])
+        tvp_template['_tvp'] = np.array([model.deflection_mm, deflection_adaptation.b, thermal_adaptation.b])
         return tvp_template
     mpc.set_tvp_fun(tvp_fun)
-    mpc.u0 = v_min
+    mpc.u0 = (v_min + v_max) / 2
     init_mpc = False
     mpc.setup()
 
     ## Setup plotting
     plotter = Plotter(mpc.data, isotherm_temps=model.isotherm_temps)
 
-    real_or_virtual = input("Real or Virtual? (r/v): ").lower().strip()
-    if real_or_virtual == "r":
+    exp_type = input("Real, Pre-recorded, or Simulated? (r/p/s): ").lower().strip()
+    exp_type = ExperimentType(exp_type)
+    if exp_type == ExperimentType.REAL:
         adaptive_velocity = input("Adaptive Velocity? (y/n): ").lower().strip()
         constant_velocity = None
         if adaptive_velocity == "n":
             constant_velocity = float(input("Enter constant velocity: "))
             print(f"Constant velocity: {constant_velocity} mm/s")
-            experiment_type = "adaptive" if adaptive_velocity else f"{constant_velocity}mm-s"
+            speed_mode = SpeedMode.CONSTANT
+        else:
+            speed_mode = SpeedMode.ADAPTIVE
 
-        t3 = T3pro(port=0)
+        t3 = T3pro(port=2)
         tb = Testbed()
     else:
         t3 = None
         tb = None
 
-    u0 = v_min
-    if real_or_virtual == "v":
+    if exp_type == ExperimentType.PRERECORDED:
         data = pkl.load(open('logs/data_adaptive_2024-09-17-14:50.pkl', 'rb'))
         if isinstance(data, LoggingData):
             thermal_frames = data.thermal_frames
+            bs = data.damping_estimates
         else:
             thermal_frames = data['thermal_frames']
-
-        for frame in thermal_frames:
-            u0, init_mpc, defl_mm = mpc_loop(mpc, u0, frame, init_mpc)
+            bs = data['damping_estimates']
+        u0 = (v_min + v_max) / 2
+        for frame, b in zip(thermal_frames, bs):
+            u0, init_mpc, defl_mm = mpc_loop(mpc, u0, frame, init_mpc, b)
             model.deflection_mm = defl_mm
 
+    elif exp_type == ExperimentType.SIMULATED:
+        simulator = do_mpc.simulator.Simulator(model)
+        simulator.set_param(t_step=1/24, integration_tool='idas')
+        sim_tvp = simulator.get_tvp_template()
+        def sim_tvp_fun(t_now):
+            sim_tvp['d'] = 0.5
+            sim_tvp['defl_meas'] = model.deflection_mm
+            sim_tvp['P'] = 20
+            return sim_tvp
+        simulator.set_tvp_fun(sim_tvp_fun)
+        simulator.setup()
+        x0 = np.linspace(2, 10, model.n_isotherms)
+        print(f"Initial Widths: {x0}")
+        simulator.x0 = x0
+        mpc.x0 = x0
+        n_steps = 1000
+        u0 = (v_min + v_max) / 2
+        simulator.set_initial_guess()
+        mpc.set_initial_guess()
+        for i in range(n_steps):
+            u0 = mpc.make_step(x0)
+            defl = deflection_adaptation.b * np.exp(-model.c_defl / u0.item()) * np.random.normal(1, 0.05)
+            deflection_adaptation.update(defl, u0.item())
+            u_prime = (2 * model._material.alpha / u0) * np.sqrt(
+                u0 / (4 * np.pi * model._material.k * model._material.alpha * (model.t_death - model.Ta)))
+            thermal_adaptation.update(x0.item(), u_prime.item())
+            model.deflection_mm = defl
+            x0 = simulator.make_step(u0)
+            plotter.plot()
+            plt.pause(0.0001)
 
-    elif real_or_virtual == 'r':
-        data_log = dict(widths_mm=[], velocities=[], deflections_mm=[], thermal_frames=[], damping_estimates=[])
+
+    elif exp_type == ExperimentType.REAL:
+        u0 = (v_min + v_max) / 2
+        # data_log = {'widths_mm': [], 'velocities': [], 'deflections_mm': [], 'thermal_frames': [], 'positions_mm': [], 'damping_estimates': []}
+        data_log = pd.DataFrame(columns=['widths_mm', 'velocities', 'deflections_mm', 'thermal_frames', 'damping_estimates'])
         home_input = input("Press Enter to home the testbed or 's' to skip: ")
         if home_input != 's':
             print("Homing testbed...")
@@ -167,7 +219,8 @@ if __name__ == "__main__":
                 ret, raw_frame = t3.read()
                 info, lut = t3.info()
                 thermal_arr = lut[raw_frame]
-                thermal_frame_to_color(thermal_arr)
+                color_frame = thermal_frame_to_color(thermal_arr)
+                cv.imshow("Frame", color_frame)
                 u0, init_mpc, defl_mm = mpc_loop(mpc, u0, thermal_arr, init_mpc)
                 model.deflection_mm = defl_mm
                 add_to_data_log(data_log, thermal_arr, model.isotherm_widths_mm,
@@ -176,6 +229,11 @@ if __name__ == "__main__":
                                 adaptive_velocity,
                                 0 if adaptive_velocity else constant_velocity)
                 tb.set_speed(u0)
+                if len(mpc.data['_x', 'width_0']) > 0:
+                    plotter.plot()
+                    plt.pause(0.0001)
+                if cv.waitKey(1) & 0xFF == ord('q'):
+                    break
             tb.set_speed(0)
 
     plt.show()
@@ -183,10 +241,10 @@ if __name__ == "__main__":
         tb.stop()
     if t3 is not None:
         t3.release()
-    if real_or_virtual == "r":
+    if exp_type == ExperimentType.REAL and len(data_log['widths_mm']) > 0:
         date = datetime.now()
-        with open(f"logs/data_{experiment_type}_{date.strftime('%Y-%m-%d-%H:%M')}.pkl", "wb") as f:
-            pkl.dump(data_log, f)
+        fname = f"logs/data_{str(speed_mode)}_{date.strftime('%Y-%m-%d-%H:%M')}.pkl"
+        data_log.to_pickle(fname)
 
 
 

@@ -93,16 +93,16 @@ def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
     """
 
     if (therm_frame > t_death).any():
-        return np.unravel_index(np.argmax(therm_frame), therm_frame.shape)
-        # top_temps = therm_frame > t_death
-        # corners = cv.cornerHarris(top_temps.astype(np.uint8), 2, 3, 0.04)
-        # corners = cv.dilate(corners, None)
-        # corners = corners > 0.01 * corners.max()
-        # # return coordinate of right-most true value
-        # coordinates = np.where(corners)
-        # right_most = np.argmax(coordinates[1])
-        # tip = (coordinates[0][right_most], coordinates[1][right_most])
-        # return tip
+        # return np.unravel_index(np.argmax(therm_frame), therm_frame.shape)
+        top_temps = therm_frame > t_death
+        corners = cv.cornerHarris(top_temps.astype(np.uint8), 2, 3, 0.04)
+        corners = cv.dilate(corners, None)
+        corners = corners > 0.01 * corners.max()
+        # return coordinate of right-most true value
+        coordinates = np.where(corners)
+        right_most = np.argmax(coordinates[1])
+        tip = (coordinates[0][right_most], coordinates[1][right_most])
+        return tip
     else:
         return None
 
@@ -135,13 +135,15 @@ class Plotter:
         isotherm_colors = ['lightcoral', 'orangered', 'orange']
         for i in range(n_isotherms):
             self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{isotherm_temps[i]:.2f}C', color=isotherm_colors[i%len(isotherm_colors)])
-        self.graphics.add_line(var_type='_tvp', var_name='defl_meas', axis=self.axs[1], color='purple')
+        self.graphics.add_line(var_type='_tvp', var_name='defl_meas', axis=self.axs[1], color='purple', label='Measured')
+        self.graphics.add_line(var_type='_z', var_name='deflection', axis=self.axs[1], color='b', linestyle='--', label='Predicted')
         self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[2], color='b')
         # self.graphics.add_line(var_type='_tvp', var_name='d', axis=self.axs[3])
 
         self.axs[0].set_ylabel(r'$w~[\si[per-mode=fraction]{\milli\meter}]$')
         self.axs[0].legend()
         self.axs[1].set_ylabel(r'$d~[\si[per-mode=fraction]{\milli\meter}]$')
+        self.axs[1].legend()
         self.axs[2].set_ylabel(r"$u~[\si[per-mode=fraction]{\milli\meter\per\second}]$")
         # self.axs[3].set_ylabel(r'$\hat{d}$')
         self.axs[-1].set_xlabel(r'$t~[\si[per-mode=fraction]{\second}]$')
@@ -153,6 +155,8 @@ class Plotter:
             self.graphics.plot_results()
             self.graphics.plot_predictions()
             self.graphics.reset_axes()
+            self.axs[-1].set_ylim(0, 10)
+
         else:
             self.graphics.plot_results(t_ind)
             self.graphics.plot_predictions(t_ind)

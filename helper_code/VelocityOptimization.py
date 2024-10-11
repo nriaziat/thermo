@@ -73,29 +73,29 @@ class AdaptiveMPC:
 
 
     def setup_mpc(self):
-        # self.model = do_mpc.model.Model(model_type=self.model_type)
-        # self._width = self.model.set_variable(var_type='_x', var_name='width', shape=(1, 1))  # isotherm width [mm]
-        # self._u = self.model.set_variable(var_type='_u', var_name='u', shape=(1, 1))  # tool speed [mm/s]
-        # self._actual_u = self.model.set_variable(var_type='_tvp', var_name='actual_u', shape=(1, 1))  # tool speed [mm/s]
-        # self._a = self.model.set_variable(var_type='_tvp', var_name='a', shape=(1, 1))  # thermal time constant [s]
-        # self._d = self.model.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))  # tool damping [s]
-        # self._alpha = self.model.set_variable(var_type='_tvp', var_name='alpha', shape=(1, 1))  # thermal input constant [s]
-        # if isinstance(self._deflection_adaptation, ScalarLinearAlgabraicAdaptation):
-        #     self._deflection = self.model.set_variable(var_type='_z', var_name='deflection', shape=(1, 1)) # deflection [mm]
-        #     self.model.set_alg('deflection', expr=self._deflection - self._d * np.exp(-self.c_defl / self._u))
-        # else:
-        #     self._deflection = self.model.set_variable(var_type='_x', var_name='deflection', shape=(1, 1)) # deflection [mm]
-        #     self.model.set_rhs('deflection', -self._deflection_adaptation.a * self._deflection + self._d * self._u)
-        #
-        # self._deflection_meas = self.model.set_variable(var_type='_tvp', var_name='deflection_measurement', shape=(1, 1)) # deflection [mm]
-        # self._width_estimate = self.model.set_variable(var_type='_tvp', var_name='width_estimate', shape=(1, 1))
-        #
-        # _, s, _ = lqr(-self.a_hat, self.alpha_hat, self.qw, self.r)
-        # self.model.set_rhs('width', -self._a * self._width + self.w_max/(np.pi/2) * np.arctan(self._alpha * ymax(1, self._u, self.Tc)))
-        # self.model.set_expression('terminal_cost', s * self._width**2)
-        # self.model.set_expression('running_cost', self.qd * (10 * self._deflection)**2 +
-        #                           self.qw * self._width**2)
-        # self.model.setup()
+        self.model = do_mpc.model.Model(model_type=self.model_type)
+        self._width = self.model.set_variable(var_type='_x', var_name='width', shape=(1, 1))  # isotherm width [mm]
+        self._u = self.model.set_variable(var_type='_u', var_name='u', shape=(1, 1))  # tool speed [mm/s]
+        self._actual_u = self.model.set_variable(var_type='_tvp', var_name='actual_u', shape=(1, 1))  # tool speed [mm/s]
+        self._a = self.model.set_variable(var_type='_tvp', var_name='a', shape=(1, 1))  # thermal time constant [s]
+        self._d = self.model.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))  # tool damping [s]
+        self._alpha = self.model.set_variable(var_type='_tvp', var_name='alpha', shape=(1, 1))  # thermal input constant [s]
+        if isinstance(self._deflection_adaptation, ScalarLinearAlgabraicAdaptation):
+            self._deflection = self.model.set_variable(var_type='_z', var_name='deflection', shape=(1, 1)) # deflection [mm]
+            self.model.set_alg('deflection', expr=self._deflection - self._d * np.exp(-self.c_defl / self._u))
+        else:
+            self._deflection = self.model.set_variable(var_type='_x', var_name='deflection', shape=(1, 1)) # deflection [mm]
+            self.model.set_rhs('deflection', -self._deflection_adaptation.a * self._deflection + self._d * self._u)
+
+        self._deflection_meas = self.model.set_variable(var_type='_tvp', var_name='deflection_measurement', shape=(1, 1)) # deflection [mm]
+        self._width_estimate = self.model.set_variable(var_type='_tvp', var_name='width_estimate', shape=(1, 1))
+
+        _, s, _ = lqr(-self.a_hat, self.alpha_hat, self.qw, self.r)
+        self.model.set_rhs('width', -self._a * self._width + self.w_max/(np.pi/2) * np.arctan(self._alpha * ymax(1, self._u, self.Tc)))
+        self.model.set_expression('terminal_cost', s * self._width**2)
+        self.model.set_expression('running_cost', self.qd * (10 * self._deflection)**2 +
+                                  self.qw * self._width**2)
+        self.model.setup()
 
         self.mpc = do_mpc.controller.MPC(self.model)
         setup_mpc = {
