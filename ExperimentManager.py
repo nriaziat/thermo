@@ -6,7 +6,7 @@ import logging
 import datetime
 import pickle as pkl
 from matplotlib import rcParams
-from utils import thermal_frame_to_color, Plotter, cv_isotherm_width, draw_info_on_frame
+from utils import thermal_frame_to_color, MPCPlotter, cv_isotherm_width, draw_info_on_frame
 from models import ElectrosurgeryMPCModel, ToolTipKF
 from AdaptiveID import ScalarLinearAlgabraicAdaptation, ScalarFirstOrderAdaptation
 import do_mpc
@@ -95,7 +95,7 @@ class ExperimentManager:
         self._adaptive_deflection_model = adaptive_deflection_model
         self._adaptive_thermal_model = adaptive_thermal_model
 
-        self.plotter = Plotter(self.mpc.data)
+        self.plotter = MPCPlotter(self.mpc.data)
         if video_save:
             self.video_save = cv.VideoWriter(f"logs/output_{self.date.strftime('%Y-%m-%d-%H:%M')}.avi",
                                              cv.VideoWriter.fourcc(*'XVID'),

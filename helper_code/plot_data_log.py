@@ -1,12 +1,19 @@
 import pickle as pkl
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy.optimize
 from numpy.core.numeric import argwhere
-from ExperimentManager import LoggingData
+from scipy.optimize import curve_fit
+from sympy.physics.control.control_plots import matplotlib
+from utils import LoggingData, find_wavefront_distance, cv_isotherm_width, find_tooltip, thermal_frame_to_color, \
+    exp_gamma
 from os import PathLike, listdir
 from VelocityOptimization import AdaptiveMPC
 from matplotlib import rcParams
 import pandas as pd
+from scipy.stats import pearsonr
+from scipy.special import k0
 
 rcParams['text.usetex'] = True
 rcParams["font.family"] = "Times New Roman"
@@ -202,16 +209,60 @@ def summarize_data_logs(list_of_const_vel: list[str | PathLike] =None, list_of_a
     plt.legend()
     plt.show()
 
+def wavefront_dist_vs_deflection(file: str | PathLike):
+    t_death = 100
+    try:
+        with open(file, "rb") as f:
+            data: LoggingData = pkl.load(f)
+    except EOFError:
+        return [], []
+    if isinstance(data, dict):
+        data = LoggingData(**data)
+    elif hasattr(data, "positions"):
+        convert_old_data_log(file)
+        with open(file, "rb") as f:
+            data: LoggingData = pkl.load(f)
+    wavefront_dists = []
+    defls = []
+    for frame, v, defl in zip(data.thermal_frames, data.velocities, data.deflections_mm):
+        if defl==0:
+            continue
+        tool_tip = find_tooltip(frame, t_death)
+        if tool_tip is None:
+            continue
+        defls.append(defl)
+        _, ellipse = cv_isotherm_width(frame, 60)
 
-
+        wavefront_dists.append(find_wavefront_distance(ellipse, tool_tip) / thermal_px_per_mm)
+    return list(wavefront_dists), defls
 
 use_position = True
-fnames = ["../logs/data_7.0mm-s_2024-09-17-14:18.pkl",
-                            "../logs/data_7.0mm-s_2024-09-17-14:20.pkl",
-                            "../logs/data_7.0mm-s_2024-09-17-14:21.pkl",
-                            "../logs/data_7.0mm-s_2024-09-17-14:22.pkl",
-                            "../logs/data_7.0mm-s_2024-09-17-14:23.pkl"]
+# fnames = ["../logs/data_7.0mm-s_2024-09-17-14:18.pkl",
+#                             "../logs/data_7.0mm-s_2024-09-17-14:20.pkl",
+#                             "../logs/data_7.0mm-s_2024-09-17-14:21.pkl",
+#                             "../logs/data_7.0mm-s_2024-09-17-14:22.pkl",
+#                             "../logs/data_7.0mm-s_2024-09-17-14:23.pkl"]
 # plot_log_dir(list_of_files=fnames,
 #                 plot_cost=False)
-summarize_data_logs(list_of_const_vel=fnames)
+# summarize_data_logs(list_of_const_vel=fnames)
+dists = []
+defls = []
 
+for file in listdir("../logs"):
+    if file.endswith(".pkl") and file.find("data") != -1 and file.find("adaptive") != -1:
+        dist, defl = wavefront_dist_vs_deflection(f"../logs/{file}")
+        if len(dist) == 0:
+            continue
+        dists += dist
+        defls += defl
+
+
+wavefront_dists = np.array(dists)
+defls = np.array(defls)
+
+pearson = pearsonr(wavefront_dists, defls)
+print(f"Pearson Correlation: {pearson[0]:.2f}")
+print(f"Pearson p-value: {pearson[1]:.2e}")
+print(f"Slope Confidence Interval: {pearson.confidence_interval(confidence_level=0.95)}")
+plt.scatter(wavefront_dists, defls)
+plt.show()
