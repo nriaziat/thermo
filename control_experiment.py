@@ -19,6 +19,7 @@ class SpeedMode(StrEnum):
     ADAPTIVE = "adaptive"
     CONSTANT = "constant"
 
+
 thermal_px_per_mm = 5.1337 # px/mm
 qw = 1  # width cost
 qd = 20 # deflection cost
@@ -27,7 +28,7 @@ v_min = 0  # minimum velocity [mm/s]
 v_max = 10  # maximum velocity [mm/s]
 
 def main(model,
-         mpc,
+         mpc: do_mpc.controller.MPC | None,
          exp_type:ExperimentType,
          adaptive_velocity:bool,
          constant_velocity:float,
@@ -63,25 +64,10 @@ def main(model,
                 mpc.set_initial_guess()
                 init_mpc = True
             u0 = mpc.make_step(w_mm).item()
-            # lb_violation = mpc.opt_x_num.cat <= mpc._lb_opt_x.cat
-            # ub_violation = mpc.opt_x_num.cat >= mpc._ub_opt_x.cat
-            # opt_labels = mpc.opt_x.labels()
-            # labels_lb_viol = np.array(opt_labels)[np.where(lb_violation)[0]]
-            # labels_ub_viol = np.array(opt_labels)[np.where(ub_violation)[0]]
-            # print(f"Lower bound violation: {labels_lb_viol}")
-            # print(f"Upper bound violation: {labels_ub_viol}")
-            # if len(labels_lb_viol) > 0 and len(labels_ub_viol) > 0:
-            #     input()
             plotter.plot()
             plt.pause(0.0001)
         return u0, init_mpc, defl_mm
 
-    # Initialize the physical models
-    # model = MultiIsothermModel(n_isotherms=3,
-    #                            material=hydrogelPhantom)
-    # model = PseudoStaticModel(material=hydrogelPhantom)
-    # model.set_cost_function(qw, qd)
-    # model.setup()
     tipPos = ToolTipKF(0.7)
 
     ## Initialize the parameter adaptation
@@ -91,39 +77,38 @@ def main(model,
 
     #############################
 
+    if mpc is not None:
 
-    mpc.set_objective(mterm=model.aux['mterm'], lterm=model.aux['lterm'])
-    mpc.set_rterm(u=r)
-    mpc.bounds['lower', '_u', 'u'] = v_min
-    mpc.bounds['upper', '_u', 'u'] = v_max
-    for i in range(model.n_isotherms):
-        # mpc.scaling['_x', f'width_{i}'] = 1
-        mpc.bounds['lower', '_x', f'width_{i}'] = 0
-        # mpc.set_nl_cons(f'width_{i}', model.isotherm_widths_mm[i], ub=25, soft_constraint=True)
-        # mpc.bounds['upper', '_x', f'width_{i}'] = 25
-    mpc.bounds['lower', '_z', 'deflection'] = 0
-    # mpc.scaling['_z', 'deflection'] = 0.1
-    # for i in range(model.n_isotherms - 1):
-    #     mpc.set_nl_cons(f'width_{i}_ordering_constr', model.isotherm_widths_mm[i] - model.isotherm_widths_mm[i+1], ub=0, soft_constraint=False)
+        mpc.set_objective(mterm=model.aux['mterm'], lterm=model.aux['lterm'])
+        mpc.set_rterm(u=r)
+        mpc.bounds['lower', '_u', 'u'] = v_min
+        mpc.bounds['upper', '_u', 'u'] = v_max
+        for i in range(model.n_isotherms):
+            # mpc.scaling['_x', f'width_{i}'] = 1
+            mpc.bounds['lower', '_x', f'width_{i}'] = 0
+            # mpc.set_nl_cons(f'width_{i}', model.isotherm_widths_mm[i], ub=25, soft_constraint=True)
+            # mpc.bounds['upper', '_x', f'width_{i}'] = 25
+        mpc.bounds['lower', '_z', 'deflection'] = 0
+        # mpc.scaling['_z', 'deflection'] = 0.1
+        # for i in range(model.n_isotherms - 1):
+        #     mpc.set_nl_cons(f'width_{i}_ordering_constr', model.isotherm_widths_mm[i] - model.isotherm_widths_mm[i+1], ub=0, soft_constraint=False)
 
-    tvp_template = mpc.get_tvp_template()
-    def tvp_fun(t_now):
-        tvp_template['_tvp'] = np.array([model.deflection_mm, deflection_adaptation.b, thermal_adaptation.b])
-        return tvp_template
-    mpc.set_tvp_fun(tvp_fun)
-    mpc.u0 = (v_min + v_max) / 2
-    init_mpc = False
-    mpc.setup()
+        tvp_template = mpc.get_tvp_template()
+        def tvp_fun(t_now):
+            tvp_template['_tvp'] = np.array([model.deflection_mm, deflection_adaptation.b, thermal_adaptation.b])
+            return tvp_template
+        mpc.set_tvp_fun(tvp_fun)
+        mpc.u0 = (v_min + v_max) / 2
+        init_mpc = False
+        mpc.setup()
 
-    ## Setup plotting
-    plotter = Plotter(mpc.data, isotherm_temps=model.isotherm_temps)
+        ## Setup plotting
+        plotter = Plotter(mpc.data, isotherm_temps=model.isotherm_temps)
 
-    # exp_type = input("Real, Pre-recorded, or Simulated? (r/p/s): ").lower().strip()
+
     exp_type = ExperimentType(exp_type)
     if exp_type == ExperimentType.REAL:
         if not adaptive_velocity:
-            # constant_velocity =
-            # constant_velocity = float(input("Enter constant velocity: "))
             print(f"Constant velocity: {constant_velocity} mm/s")
             speed_mode = SpeedMode.CONSTANT
         else:
@@ -139,7 +124,14 @@ def main(model,
             bs = data['damping_estimates']
         u0 = (v_min + v_max) / 2
         for frame, b in zip(thermal_frames, bs):
-            u0, init_mpc, defl_mm = mpc_loop(mpc, u0, frame, init_mpc, b)
+            if mpc is not None:
+                u0, init_mpc, defl_mm = mpc_loop(mpc, u0, frame, init_mpc, b)
+            else:
+                defl_px, _ = tipPos.update_with_measurement(frame)
+                defl_mm = defl_px / thermal_px_per_mm
+                deflection_adaptation.update(defl_mm, u0)
+                model.deflection_mm = defl_mm
+                u0 = model.find_optimal_velocity()
             model.deflection_mm = defl_mm
 
     elif exp_type == ExperimentType.SIMULATED:

@@ -106,15 +106,6 @@ def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
     else:
         return None
 
-exp_gamma = np.exp(0.5772)
-@lru_cache
-def F(Tc):
-    return np.exp(-Tc) * (1 + (1.477 * Tc) ** -1.407) ** 0.7107
-
-# @lru_cache
-def ymax(alpha, u, Tc):
-    return fabs(4 * alpha / (u * exp_gamma) * F(Tc))
-
 class Plotter:
     def __init__(self, mpc_data: do_mpc.data.Data, isotherm_temps=None):
         plt.ion()
@@ -134,7 +125,7 @@ class Plotter:
         self.graphics = do_mpc.graphics.Graphics(mpc_data)
         isotherm_colors = ['lightcoral', 'orangered', 'orange']
         for i in range(n_isotherms):
-            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{isotherm_temps[i]:.2f}C', color=isotherm_colors[i%len(isotherm_colors)])
+            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{isotherm_temps[i]:.2f}C', color=isotherm_colors[i % len(isotherm_colors)])
         self.graphics.add_line(var_type='_tvp', var_name='defl_meas', axis=self.axs[1], color='purple', label='Measured')
         self.graphics.add_line(var_type='_z', var_name='deflection', axis=self.axs[1], color='b', linestyle='--', label='Predicted')
         self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[2], color='b')

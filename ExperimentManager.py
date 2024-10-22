@@ -7,7 +7,7 @@ import datetime
 import pickle as pkl
 from matplotlib import rcParams
 from utils import thermal_frame_to_color, Plotter, cv_isotherm_width, draw_info_on_frame
-from models import ElectrosurgeryModel, ToolTipKF
+from models import ElectrosurgeryMPCModel, ToolTipKF
 from AdaptiveID import ScalarLinearAlgabraicAdaptation, ScalarFirstOrderAdaptation
 import do_mpc
 
@@ -32,7 +32,7 @@ class ExperimentManager:
 
     def __init__(self,
                  testbed,
-                 model: ElectrosurgeryModel,
+                 model: ElectrosurgeryMPCModel,
                  adaptive_deflection_model: Optional[ScalarLinearAlgabraicAdaptation] = None,
                  adaptive_thermal_model: Optional[ScalarFirstOrderAdaptation] = None,
                  thermal_camera=None,
@@ -289,7 +289,7 @@ class ExperimentManager:
 class VirtualExperimentManager(ExperimentManager):
     def __init__(self,
                  data_save: dict,
-                 model: ElectrosurgeryModel,
+                 model: ElectrosurgeryMPCModel,
                  adaptive_deflection_model: Optional[ScalarLinearAlgabraicAdaptation] = None,
                  adaptive_thermal_model: Optional[ScalarFirstOrderAdaptation] = None,
                  debug: bool=False,

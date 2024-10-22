@@ -1,13 +1,12 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import serial.serialutil
-from control_experiment import ExperimentType, SpeedMode, main
-from models import MultiIsothermModel, PseudoStaticModel, humanTissue, hydrogelPhantom
+from control_experiment import ExperimentType, main
+from models import MultiIsothermMPCModel, PseudoStaticMPCModel, humanTissue, hydrogelPhantom, SteadyStateMinimizationModel
 import do_mpc
 from T3pro import T3pro
 from testbed import Testbed
 import TKinterModernThemes as TKMT
-import cv2
 
 class ControlExperimentUI(TKMT.ThemedTKinterFrame):
     def __init__(self):
@@ -42,11 +41,12 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         self.exp_type_frame.Radiobutton("Pre-recorded", variable=self.exp_type, value=ExperimentType.PRERECORDED)
         self.exp_type_frame.Radiobutton("Simulated", variable=self.exp_type, value=ExperimentType.SIMULATED)
 
-        self.velocity_type_frame.Radiobutton("Adaptive Velocity", variable=self.adaptive_velocity, value="y")
+        self.velocity_type_frame.Radiobutton("MPC", variable=self.adaptive_velocity, value="y")
         self.velocity_type_frame.Radiobutton("Constant Velocity", variable=self.adaptive_velocity, value="n")
 
         self.model_type_frame.Radiobutton("Multi-Isotherm", variable=self.model_name, value="multiisotherm")
-        self.model_type_frame.Radiobutton("Pseudo-Static", variable=self.model_name, value="pseudostatic")
+        self.model_type_frame.Radiobutton("MPC Pseudo-Static", variable=self.model_name, value="pseudostatic")
+        self.model_type_frame.Radiobutton("Minimization", variable=self.model_name, value="minimization")
 
         self.material_type_frame.Radiobutton("Human Tissue", variable=self.material_name, value="human")
         self.material_type_frame.Radiobutton("Hydrogel Phantom", variable=self.material_name, value="hydrogel")
@@ -63,6 +63,17 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         self.save_indicator = self.files_frame.Button("Log Save Directory", command=self.folderDialog)
         self.load_indicator = self.files_frame.Button("Load Log File", command=self.loadLogDialog)
 
+    def model_selection(self):
+        if self.model_name.get() == "minimization":
+            self.numerical_params_frame.Label("Number of Horizons", disabled=True)
+            self.numerical_params_frame.Entry(disabled=True)
+            self.numerical_params_frame.Label("Qd", disabled=True)
+            self.numerical_params_frame.Entry(disabled=True)
+        else:
+            self.numerical_params_frame.Label("Number of Horizons", disabled=False)
+            self.numerical_params_frame.Entry(disabled=False)
+            self.numerical_params_frame.Label("Qd", disabled=False)
+            self.numerical_params_frame.Entry(disabled=False)
 
     def folderDialog(self):
         filename = filedialog.askdirectory()
@@ -85,29 +96,40 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
                 messagebox.showerror("Warning", "Multi-Isotherm model requires at least 3 isotherms")
                 return
 
-        model = MultiIsothermModel(n_isotherms=self.n_isotherms.get(), material=material) if self.model_name.get() == "multiisotherm" else PseudoStaticModel(material)
+        if (name := self.model_name.get()) == "minimization":
+            model = SteadyStateMinimizationModel(material)
+        elif name == "multiisotherm":
+            model = MultiIsothermMPCModel(n_isotherms=self.n_isotherms.get(), material=material)
+        elif name == "pseudostatic":
+            model = PseudoStaticMPCModel(material)
+        else:
+            raise ValueError(f"Invalid model name: {name}")
 
-
-        model.set_cost_function(self.qd.get(), self.qw.get())
-        model.setup()
-        mpc = do_mpc.controller.MPC(model=model)
-        ##############################
-        mpc.settings.n_horizon = self.n_horizons.get()
-        mpc.settings.n_robust = 0
-        mpc.settings.open_loop = 0
-        mpc.settings.t_step = 1 / 24
-        mpc.settings.state_discretization = 'collocation'
-        mpc.settings.collocation_type = 'radau'
-        mpc.settings.collocation_deg = 2
-        mpc.settings.collocation_ni = 2
-        mpc.settings.store_full_solution = True
-        mpc.settings.nlpsol_opts = {'ipopt.linear_solver': 'MA97',
-                                    # 'ipopt.bound_relax_factor': 0,
-                                    # 'ipopt.mu_strategy': 'adaptive',
-                                    # 'ipopt.ma57_automatic_scaling': 'yes',
-                                    # 'ipopt.check_derivatives_for_naninf': 'yes',
-                                    # 'ipopt.expect_infeasible_problem': 'yes',
-                                    # 'monitor': 'nlp_g'
+        if name == "minimization":
+            mpc = None
+            model.qd = self.qd.get()
+            model.qw = self.qw.get()
+        else:
+            model.set_cost_function(self.qd.get(), self.qw.get())
+            model.setup()
+            mpc = do_mpc.controller.MPC(model=model)
+            ##############################
+            mpc.settings.n_horizon = self.n_horizons.get()
+            mpc.settings.n_robust = 0
+            mpc.settings.open_loop = 0
+            mpc.settings.t_step = 1 / 24
+            mpc.settings.state_discretization = 'collocation'
+            mpc.settings.collocation_type = 'radau'
+            mpc.settings.collocation_deg = 2
+            mpc.settings.collocation_ni = 2
+            mpc.settings.store_full_solution = True
+            mpc.settings.nlpsol_opts = {'ipopt.linear_solver': 'MA97',
+                                        # 'ipopt.bound_relax_factor': 0,
+                                        # 'ipopt.mu_strategy': 'adaptive',
+                                        # 'ipopt.ma57_automatic_scaling': 'yes',
+                                        # 'ipopt.check_derivatives_for_naninf': 'yes',
+                                        # 'ipopt.expect_infeasible_problem': 'yes',
+                                        # 'monitor': 'nlp_g'
                                     }
         # mpc.settings.supress_ipopt_output()
         exp_type = ExperimentType(self.exp_type.get())
@@ -117,6 +139,11 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         if exp_type == ExperimentType.PRERECORDED:
             if self.logFile.get() == "":
                 messagebox.showerror("Warning", "No log file selected")
+                return
+
+        elif exp_type == ExperimentType.SIMULATED:
+            if self.model_name.get() == "minimization":
+                messagebox.showerror("Warning", "Minimization model cannot be simulated")
                 return
 
         elif exp_type == ExperimentType.REAL:

@@ -6,6 +6,17 @@ from filterpy.common import Q_discrete_white_noise
 from utils import find_tooltip
 from dataclasses import dataclass
 from scipy.special import k0
+from scipy.optimize import minimize
+from functools import lru_cache
+
+exp_gamma = np.exp(0.5772)
+@lru_cache
+def F(Tc):
+    return np.exp(-Tc) * (1 + (1.477 * Tc) ** -1.407) ** 0.7107
+
+# @lru_cache
+def ymax(alpha, u, Tc):
+    return 4 * alpha / (u * exp_gamma) * F(Tc)
 
 @dataclass
 class MaterialProperties:
@@ -80,8 +91,89 @@ class ToolTipKF(KalmanFilter):
             return np.linalg.norm(deflection), np.linalg.norm(ddeflection) * np.sign(np.dot(deflection, ddeflection))
         return 0, 0
 
+class ElectrosurgeryCostMinimizationModel(ABC):
 
-class ElectrosurgeryModel(ABC, do_mpc.model.Model):
+    def __init__(self, material: MaterialProperties, vlim: tuple[float, float] = (0.1, 10)):
+        self._material = material
+        self._vmin = vlim[0]
+        self._vmax = vlim[1]
+
+    def find_optimal_velocity(self) -> np.ndarray:
+        res = minimize(self.cost_function, x0=1, bounds=[(self._vmin, self._vmax)])
+        return res.x
+
+    @abstractmethod
+    def cost_function(self, **kwargs) -> float:
+        pass
+
+    @abstractmethod
+    def isotherm_widths_mm(self) -> float | np.ndarray[float]:
+        pass
+
+    @abstractmethod
+    def deflection_mm(self) -> float:
+        pass
+
+    @abstractmethod
+    def isotherm_temps(self) -> np.ndarray[float]:
+        pass
+
+
+class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
+    c_defl = 0.5  # deflection damping constant [s]
+
+
+    def __init__(self, material: MaterialProperties, vlim: tuple[float, float] = (0.1, 10),
+                 qw = 1, qd = 1, r = 0.1):
+        super().__init__(material, vlim)
+        self._isotherm_temps = np.array([60.])
+        self._isotherm_measurement_mm = 0
+        self._deflection_measurement_mm = 0
+        self._d = 0.5
+        self._P = 45
+        self._u0 = (vlim[0] + vlim[1]) / 2
+        self.r = r  # input penalty
+        self.qw = qw
+        self.qd = qd
+
+    def cost_function(self, v) -> float:
+        return self.qw * self.isotherm_width_model(v) + self.qd * self.deflection_model(v) + self.r * (v-self._u0)**2
+
+    def isotherm_width_model(self, v: float) -> float:
+        return ymax(self._material.alpha, v, self.isotherm_temps[0])
+
+    def deflection_model(self, v: float) -> float:
+        return self._d * np.exp(-self.c_defl / v)
+
+    def find_optimal_velocity(self):
+        res = minimize(self.cost_function, x0=1, bounds=[(self._vmin, self._vmax)])
+        self._u0 = res.x
+        return self._u0
+
+    @property
+    def isotherm_temps(self) -> np.ndarray[float]:
+        return self._isotherm_temps
+
+    @property
+    def deflection_mm(self) -> float:
+        return self.deflection_model(self._P)
+
+    @deflection_mm.setter
+    def deflection_mm(self, value: float):
+        assert value >= 0, "Deflection must be non-negative"
+        self._deflection_measurement_mm = value
+
+    @property
+    def isotherm_widths_mm(self) -> float | np.ndarray[float]:
+        return self._isotherm_measurement_mm
+
+    @isotherm_widths_mm.setter
+    def isotherm_widths_mm(self, value: float):
+        self._isotherm_measurement_mm = value
+
+
+
+class ElectrosurgeryMPCModel(ABC, do_mpc.model.Model):
 
     def __init__(self, model_type: str = "continuous"):
         super().__init__(model_type)
@@ -106,7 +198,7 @@ class ElectrosurgeryModel(ABC, do_mpc.model.Model):
     def set_cost_function(self, qw: float, qd: float):
         pass
 
-class MultiIsothermModel(ElectrosurgeryModel):
+class MultiIsothermMPCModel(ElectrosurgeryMPCModel):
     """
     This model uses the dynamics of multiple isotherms to predict the width of each isotherm.
     """
@@ -186,7 +278,7 @@ class MultiIsothermModel(ElectrosurgeryModel):
         return self._isotherm_temps
 
 
-class PseudoStaticModel(ElectrosurgeryModel):
+class PseudoStaticMPCModel(ElectrosurgeryMPCModel):
     """
     This model uses a pseudo-static approximation to predict the width of the isotherm.
     """
