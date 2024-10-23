@@ -4,8 +4,7 @@ import numpy as np
 from filterpy.kalman import KalmanFilter
 from filterpy.common import Q_discrete_white_noise
 from utils import find_tooltip
-from dataclasses import dataclass, field
-from scipy.special import k0
+from dataclasses import dataclass
 from scipy.optimize import minimize_scalar
 from functools import lru_cache
 
@@ -81,10 +80,6 @@ class ToolTipKF(KalmanFilter):
         :param frame: Temperature field from the camera.
         :return: deflection [px], deflection rate [px/s]
         """
-        # if self._init:
-        #     last_tool_tip = self.x[0], self.x[2]
-        # else:
-        #     last_tool_tip = None
         tool_tip = find_tooltip(frame, 50)
         if tool_tip is None:
             return 0, 0
@@ -108,7 +103,7 @@ class ToolTipKF(KalmanFilter):
 class ElectrosurgeryCostMinimizationModel(ABC):
 
     def __init__(self, material: MaterialProperties, vlim: tuple[float, float] = (0.1, 10)):
-        self._material = material
+        self.material = material
         self._vmin = vlim[0]
         self._vmax = vlim[1]
 
@@ -146,8 +141,8 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
         return self.qw * self.isotherm_width_model(v) + self.qd * self.deflection_model(v) + self.r * (v-self._u0)**2
 
     def isotherm_width_model(self, v: float) -> float:
-        Tc = 2 * np.pi * self._material.k * (self.t_death - self.Ta) / self._P
-        return ymax(self._material.alpha, v, Tc)
+        Tc = 2 * np.pi * self.material.k * (self.t_death - self.Ta) / self._P
+        return ymax(self.material.alpha, v, Tc)
 
     def deflection_model(self, v: float) -> float:
         return self._d * np.exp(-self.c_defl / v)

@@ -112,6 +112,7 @@ rcParams['lines.linewidth'] = 2.0
 rcParams['axes.labelsize'] = 'xx-large'
 rcParams['xtick.labelsize'] = 'xx-large'
 rcParams['ytick.labelsize'] = 'xx-large'
+
 mpc_graphics = do_mpc.graphics.Graphics(mpc.therm_images)
 sim_graphics = do_mpc.graphics.Graphics(simulator.therm_images)
 
