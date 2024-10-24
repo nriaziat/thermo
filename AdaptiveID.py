@@ -1,6 +1,7 @@
-from filterpy.kalman import UnscentedKalmanFilter, unscented_transform, MerweScaledSigmaPoints
+from filterpy.kalman import UnscentedKalmanFilter, MerweScaledSigmaPoints
 import numpy as np
 from models import ymax, Tc, MaterialProperties
+import scipy
 from abc import ABC, abstractmethod
 
 def proj(theta: float, y: float)->float:
@@ -86,30 +87,86 @@ class ScalarLinearAlgabraicAdaptation:
         self.b += -self.gamma * error * u / (1+abs(u))
         return self.b
 
+class BoundedMerweScaledSigmaPoints(MerweScaledSigmaPoints):
+    def __init__(self, n, alpha, beta, kappa, low=0, high=np.inf):
+        super().__init__(n, alpha, beta, kappa, sqrt_method=self.sqrt)
+        if np.isscalar(low):
+            low = np.array([low]*n)
+        self.low = low
+        if np.isscalar(high):
+            high = np.array([high]*n)
+        self.high = high
+
+    def sqrt(self, x):
+        try:
+            result = scipy.linalg.cholesky(x)
+        except np.linalg.LinAlgError:
+            x = (x + x.T) / 2
+            result = scipy.linalg.cholesky(x)
+        return result
+
+
+    def sigma_points(self, x, P):
+        """
+        Computes the sigma points for an unscented Kalman filter
+        using the formulation of Wan and van der Merwe. This method
+        is less efficient than the simple method, but is more stable
+        for near-linear systems.
+        """
+        if self.n != np.size(x):
+            raise ValueError("expected size(x) {}, but size is {}".format(
+                self.n, np.size(x)))
+
+        n = self.n
+
+        if np.isscalar(x):
+            x = np.asarray([x])
+
+        if  np.isscalar(P):
+            P = np.eye(n)*P
+        else:
+            P = np.atleast_2d(P)
+
+        lambda_ = self.alpha**2 * (n + self.kappa) - n
+        U = self.sqrt((lambda_ + n)*P)
+        sigmas = np.zeros((2*n+1, n))
+        # sigmas[0] = x
+        sigmas[0] = np.minimum(self.high - 1e-6, np.maximum(self.low + 1e-6, x))
+        for k in range(n):
+            # pylint: disable=bad-whitespace
+            sigmas[k+1]   = np.minimum(self.high-1e-6, np.maximum(self.subtract(x, -U[k]), self.low + 1e-6))
+            sigmas[n+k+1] = np.minimum(self.high-1e-6, np.maximum(self.subtract(x, U[k]), self.low + 1e-6))
+
+
+        return sigmas
+
 
 
 class UKFIdentification(ABC):
-    def __init__(self, w0: np.array, labels: list[str]):
+    def __init__(self, w0: np.array, dim_z: int, labels: list[str], lower_bounds: np.ndarray = -np.inf,
+                 upper_bounds: np.ndarray = np.inf):
         """
         :param w0: Initial parameter estimate
         """
         n = len(w0)
         assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
         self._labels = labels
-        self.points = MerweScaledSigmaPoints(n=n,
+
+        self.points = BoundedMerweScaledSigmaPoints(n=n,
                                              alpha=1e-3,
                                              beta=2,
-                                             kappa=0)
+                                             kappa=0,
+                                             low=lower_bounds,
+                                             high=upper_bounds)
+
+
         self.ukf = UnscentedKalmanFilter(dim_x=n,
-                                         dim_z=1,
+                                         dim_z=dim_z,
                                          dt=1/24,
                                          hx=self.hx,
                                          fx=self.fx,
                                          points=self.points)
         self.ukf.x = w0
-        self.ukf.P = np.eye(n) * 0.1
-        self.ukf.R = 0.1
-        self.ukf.Q = np.eye(n) * 0.1
         self._alpha_sq =1**2 # Fading memory factor
         self._data = {label: [] for label in labels}
 
@@ -158,20 +215,20 @@ class UKFIdentification(ABC):
 class DeflectionAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
         """
-        :param w0: Initial parameter estimate [defl, defl_rate, k, b, c]
+        :param w0: Initial parameter estimate [defl, defl_rate, k, b, c_defl]
         """
-        super().__init__(w0, labels)
+        super().__init__(w0, dim_z=2, labels=labels, lower_bounds=np.array([-np.inf, -np.inf, 0, 0, 0]))
         assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
-        self.ukf.P = np.diag([4, 4, 10, 10, 10])
-        self.ukf.R = 4
-        self.ukf.Q = np.diag([4, 10, 10, 10, 10])
+        self.ukf.P = np.diag([4, 4, 1, 1, 1])
+        self.ukf.R = 1
+        self.ukf.Q = np.diag([4, 4, 1, 1, 1])
 
     @property
     def b(self):
         return self.ukf.x[3]
 
     @property
-    def c(self):
+    def c_defl(self):
         return self.ukf.x[4]
 
     @property
@@ -184,7 +241,7 @@ class DeflectionAdaptation(UKFIdentification):
         """
         # v = kwargs.get("v")
         # return np.array([x[0] * np.exp(-x[1] / v)])
-        return np.array([x[0]])
+        return np.array([x[0], x[1]])
 
     def fx(self, x, dt, **kwargs):
         """
@@ -192,30 +249,33 @@ class DeflectionAdaptation(UKFIdentification):
         """
         v = kwargs.get("v")
         x[0] += x[1] * dt
-        F = x[3] * np.exp(-x[4] / v)
+        if 0 < x[1] < v:
+            F = x[3] * np.exp(-x[4] / (v - x[1]))
+        else:
+            F = x[3] * np.exp(-x[4] / (v+1e-6))
         x[1] += (-x[2] * x[0] + F) * dt
         return x
 
 class ThermalAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
         """
-        :param w0: Initial parameter estimate  [q]
+        :param w0: Initial parameter estimate  [q, k]
         """
-        super().__init__(w0, labels)
-        self.ukf.P = np.diag([0.5*w0[0]])
-        self.ukf.R = 4
-        self.ukf.Q = 1
+        super().__init__(w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0.1e-3]))
+        self.ukf.P = np.diag([4, 1e-3])
+        self.ukf.R = 2
+        self.ukf.Q = np.diag([4, 1e-4])
         self.Cp = 3421
         self.rho = 1090e-9
-        self.k = 0.46e-3
+        # self.k = 0.46e-3
 
-    # @property
-    # def k(self):
-    #     return self.ukf.x[0]
+    @property
+    def k(self):
+        return self.ukf.x[1]
 
     @property
     def q(self):
-        return self.ukf.x
+        return self.ukf.x[0]
 
     @property
     def alpha(self):
@@ -225,11 +285,10 @@ class ThermalAdaptation(UKFIdentification):
         """
         Measurement function
         """
-        x = np.abs(x)
         v = kwargs.get("v")
         dT = kwargs.get("dT")
-        alpha = self.k / (self.rho * self.Cp)
-        material = MaterialProperties(k=self.k, rho=self.rho, Cp=self.Cp)
+        alpha = x[1] / (self.rho * self.Cp)
+        material = MaterialProperties(k=x[1], rho=self.rho, Cp=self.Cp)
         y = ymax(alpha, v, Tc(dT, material, x[0]))
         if np.isinf(y) or np.isnan(y):
             return self.ukf.y

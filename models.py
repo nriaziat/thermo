@@ -147,7 +147,7 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
         self.qd = qd
 
     def cost_function(self, v) -> float:
-        return self.qw * self.isotherm_width_model(v)**2 + self.qd * self.deflection_model(v)**2 + self.r * (v-self._u0)**2
+        return self.qw * self.isotherm_width_model(v) + self.qd * self.deflection_model(v) + self.r * (v-self._u0)**2
 
     def isotherm_width_model(self, v: float) -> float:
         return ymax(self.material.alpha, v, Tc(self.t_death - self.Ta, self.material, self._P))
@@ -229,10 +229,10 @@ class PseudoStaticModel(ElectrosurgeryMPCModel):
         self._d = self.set_variable(var_type='_tvp', var_name='d', shape=(1, 1))  # adaptive tool damping
         self._velocity = self.set_variable(var_type='_u', var_name='u', shape=(1, 1))
         self._P = self.set_variable(var_type='_tvp', var_name='P', shape=(1, 1))  # effective power [W]
-        self.set_rhs('width_0', 10 * ((self._P * 2 * self._material.alpha / (self._velocity + DIVIDE_BY_ZERO) * np.sqrt(self._velocity / (4 * np.pi * self._material.k * self._material.alpha * (self.t_death - self.Ta))) - self._width)))
+        self.set_rhs('width_0', 10 * ((self._P * 2 * self.material.alpha / (self._velocity + DIVIDE_BY_ZERO) * np.sqrt(self._velocity / (4 * np.pi * self.material.k * self.material.alpha * (self.t_death - self.Ta))) - self._width)))
         self.set_alg('deflection', expr=self._deflection - self._d * np.exp(-self.c_defl / (self._velocity + DIVIDE_BY_ZERO)))
         self._tip_lead_dist = self.set_variable('_x', "tip_lead_dist", shape=(1, 1))
-        self.set_rhs('tip_lead_dist', 10 * (-self._material.alpha/(self._velocity + DIVIDE_BY_ZERO) * np.log(self._P/(3 * np.pi * self._material.k * (100 - self.Ta))) - self._tip_lead_dist))
+        self.set_rhs('tip_lead_dist', 10 * (-self.material.alpha/(self._velocity + DIVIDE_BY_ZERO) * np.log(self._P/(3 * np.pi * self.material.k * (100 - self.Ta))) - self._tip_lead_dist))
         # self.set_rhs('tip_lead_dist', 10 * (self._material.alpha/(2*self._velocity) * lambertw(8*self._material.k**2*np.pi**3*(self.t_death-self.Ta)**2/self._P**2, 0)  - self._tip_lead_dist))
 
     def set_cost_function(self, qw: float, qd: float):

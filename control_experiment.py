@@ -36,7 +36,7 @@ v_max = 10  # maximum velocity [mm/s]
 
 def update_adaptive_params(model, deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
                            thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
-                           defl_mm: float, w_mm: float, u0: float):
+                           defl_mm: float, w_mm: float, u0: float, ddefl_mm: float):
     """
     Update the adaptive parameters
     :param model: Model object
@@ -47,14 +47,14 @@ def update_adaptive_params(model, deflection_adaptation: ScalarLinearAlgabraicAd
     :param u0: Velocity [mm/s]
     """
     # deflection_adaptation.update(defl_mm, np.exp(-model.c_defl / u0))
-    deflection_adaptation.update(defl_mm, v=u0)
+    deflection_adaptation.update(np.array([defl_mm, ddefl_mm]), v=u0)
     dT = model.t_death - model.Ta
     thermal_adaptation.update(w_mm, v=u0, dT=dT)
     model.material.k = thermal_adaptation.k
     model.material.rho = thermal_adaptation.rho
     model.material.Cp = thermal_adaptation.Cp
     model._b = deflection_adaptation.b
-    model._c_defl = deflection_adaptation.c
+    model._c_defl = deflection_adaptation.c_defl
 
 
 def update(params: RunningParams, model,
@@ -75,8 +75,9 @@ def update(params: RunningParams, model,
     :param mpc: Optional MPC object
     :return: Updated velocity, deflection, width, MPC initialization flag
     """
-    defl_px, _ = tipPos.update_with_measurement(frame)
+    defl_px, ddefl_px = tipPos.update_with_measurement(frame)
     defl_mm = defl_px / thermal_px_per_mm
+    ddefl_mm = ddefl_px / thermal_px_per_mm
     model.deflection_mm = defl_mm
     tip_lead_distance = 0
     w_px, ellipse = cv_isotherm_width(frame, model.isotherm_temps[0])
@@ -84,7 +85,7 @@ def update(params: RunningParams, model,
     model.width_mm = w_mm
     if ellipse is not None and tipPos.pos_px is not None:
         tip_lead_distance = find_wavefront_distance(ellipse, tipPos.pos_px) / thermal_px_per_mm
-    update_adaptive_params(model, deflection_adaptation, thermal_adaptation, defl_mm, w_mm, u0)
+    update_adaptive_params(model, deflection_adaptation, thermal_adaptation, defl_mm, w_mm, u0, ddefl_mm)
     if not init_mpc and params.mpc:
         mpc.x0['width_0'] = w_mm
         mpc.x0['tip_lead_dist'] = tip_lead_distance
@@ -140,9 +141,9 @@ def main(model,
 
     ## Initialize the parameter adaptation
     # thermal_adaptation = ScalarLinearAlgabraicAdaptation(b=model.material.alpha, gamma=0.01)
-    thermal_adaptation = ThermalAdaptation(np.array([model._P]), labels=['P'])
+    thermal_adaptation = ThermalAdaptation(np.array([model._P, model.material.k]), labels=['P', 'k'])
     # deflection_adaptation = ScalarLinearAlgabraicAdaptation(b=0.1, gamma=0.5)
-    deflection_adaptation = DeflectionAdaptation(np.array([0, 0, 1, 10, 0.5]), labels=['d', 'd_dot', 'k', 'b', 'c'])
+    deflection_adaptation = DeflectionAdaptation(np.array([0, 0, 1, 10, 0.5]), labels=['d', 'd_dot', 'k', 'b', 'c_defl'])
 
     #############################
 
@@ -304,12 +305,11 @@ def prerecorded_experiment(params: RunningParams, model, tipPos, plotter, mpc,
         thermal_frames = data['thermal_frames']
         bs = data['damping_estimates']
         vs = data['velocities']
+    u0 = (v_min + v_max) / 2
     init_mpc = False
     for i, (frame, b, v) in enumerate(zip(tqdm.tqdm(thermal_frames), bs, vs)):
-        u0, defl_mm, w_mm, init_mpc = update(params, model, tipPos, deflection_adaptation, thermal_adaptation, v,
+        u0, defl_mm, w_mm, init_mpc = update(params, model, tipPos, deflection_adaptation, thermal_adaptation, u0,
                                              frame, init_mpc, mpc)
         if not plot(params, plotter, w_mm, defl_mm, u0, deflection_plotter, thermal_plotter):
             break
-        deflection_plotter.plot()
-        thermal_plotter.plot()
         plt.pause(0.0001)
