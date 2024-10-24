@@ -1,15 +1,11 @@
 import numpy as np
 import cv2 as cv
-from casadi import fabs
-from functools import lru_cache
 import cmapy
 from dataclasses import dataclass, field
 import do_mpc
 import pickle as pkl
 import matplotlib.pyplot as plt
-from cmapy import color
 from matplotlib import rcParams
-from scipy.optimize import curve_fit
 
 
 def thermal_frame_to_color(thermal_frame):
@@ -133,6 +129,39 @@ def find_wavefront_distance(ellipse: tuple, tool_tip: tuple) -> float:
     ellipse_tip = min(ellipse_tip, key=lambda x: np.linalg.norm(tool_tip - x))
     x_dir = np.sign(np.dot(ellipse_tip - tool_tip, np.array([1, 0])))
     return x_dir * np.linalg.norm(tool_tip - ellipse_tip)
+
+class AdaptiveParameterPlotter:
+    def __init__(self, adaptive_model):
+        self._adaptive_model = adaptive_model
+        self.n = len(adaptive_model.labels)
+        if self.n == 1:
+            self.fig, self.axs = plt.subplots(1, figsize=(16, 9), sharex=True)
+            self.lines = []
+            line, = self.axs.plot([], [], label=adaptive_model.labels[0])
+            self.lines.append(line)
+            self.axs.set_ylabel(adaptive_model.labels[0])
+            self.axs.legend()
+        else:
+            self.fig, self.axs = plt.subplots(self.n, figsize=(16, 9), sharex=True)
+            self.lines = []
+            for i, (ax, label) in enumerate(zip(self.axs, adaptive_model.labels)):
+                line, = self.axs[i].plot([], [], label=label)
+                self.lines.append(line)
+                self.axs[i].set_ylabel(label)
+                self.axs[i].legend()
+
+    def plot(self):
+        if self.n == 1:
+            self.lines[0].set_data(range(len(self._adaptive_model.data[self._adaptive_model.labels[0]])), self._adaptive_model.data[self._adaptive_model.labels[0]])
+            self.axs.relim()
+            self.axs.autoscale_view()
+        else:
+            for i, label in enumerate(self._adaptive_model.labels):
+                self.lines[i].set_data(range(len(self._adaptive_model.data[label])), self._adaptive_model.data[label])
+                self.axs[i].relim()
+                self.axs[i].autoscale_view()
+        self.fig.canvas.draw()
+        self.fig.canvas.flush_events()
 
 
 class GenericPlotter:

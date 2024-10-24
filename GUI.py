@@ -32,6 +32,7 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         self.save_dir = tk.StringVar()
         self.logFile = tk.StringVar()
         self.home = tk.BooleanVar(value=True)
+        self.plot_adaptive_params = tk.BooleanVar(value=False)
         self.create_widgets()
         self.run()
 
@@ -41,6 +42,7 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         self.exp_type_frame.Radiobutton("Pre-recorded", variable=self.exp_type, value=ExperimentType.PRERECORDED, command=self.exp_type_selection)
         self.exp_type_frame.Radiobutton("Simulated", variable=self.exp_type, value=ExperimentType.SIMULATED, command=self.exp_type_selection)
         self.homing_button = self.exp_type_frame.SlideSwitch("Home", variable=self.home)
+        self.plot_adaptive_params_button = self.exp_type_frame.SlideSwitch("Plot Adaptive Params", variable=self.plot_adaptive_params)
 
         self.model_type_frame.Radiobutton("MPC", variable=self.model_name, value="pseudostatic", command=self.model_selection)
         self.model_type_frame.Radiobutton("Minimization", variable=self.model_name, value="minimization", command=self.model_selection)
@@ -109,12 +111,15 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
             return
         self.save_dir.set(filename)
         self.save_indicator.config(text=f"Save to: {filename}")
+        self.exp_type.set(ExperimentType.REAL)
+        self.exp_type_selection()
 
     def loadLogDialog(self):
         filename = filedialog.askopenfilename(filetypes=[("Log Files", "*.pkl")])
         self.logFile.set(filename)
         self.load_indicator.config(text=f"Load from: {filename.split('/')[-1]}")
         self.exp_type.set(ExperimentType.PRERECORDED)
+        self.exp_type_selection()
 
     def start_experiment(self):
 
@@ -193,7 +198,8 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
                                log_save_dir=save_dir,
                                log_file_to_load=self.logFile.get(),
                                mpc=mpc is not None,
-                               home=self.home.get())
+                               home=self.home.get(),
+                               plot_adaptive_params=self.plot_adaptive_params.get())
 
         main(model, params, mpc, t3, tb, self.r.get())
 

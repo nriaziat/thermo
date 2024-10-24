@@ -1,7 +1,7 @@
 import do_mpc.controller
 from T3pro import T3pro
 from testbed import Testbed
-from models import *
+from models import ToolTipKF
 from AdaptiveID import *
 from utils import *
 from datetime import datetime
@@ -27,14 +27,15 @@ class RunningParams:
     log_file_to_load: str
     mpc: bool
     home: bool
+    plot_adaptive_params: bool
 
 thermal_px_per_mm = 5.1337 # px/mm
 v_min = 0.  # minimum velocity [mm/s]
 v_max = 10  # maximum velocity [mm/s]
 
 
-def update_adaptive_params(model, deflection_adaptation: ScalarLinearAlgabraicAdaptation,
-                           thermal_adaptation: ScalarLinearAlgabraicAdaptation,
+def update_adaptive_params(model, deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
+                           thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
                            defl_mm: float, w_mm: float, u0: float):
     """
     Update the adaptive parameters
@@ -45,19 +46,21 @@ def update_adaptive_params(model, deflection_adaptation: ScalarLinearAlgabraicAd
     :param w_mm: Width [mm]
     :param u0: Velocity [mm/s]
     """
-    deflection_adaptation.update(defl_mm, np.exp(-model.c_defl / u0))
-    thermal_adaptation.update(w_mm, ymax(1, u0, Tc(model.t_death - model.Ta, model.material, model._P)))
-    model.material.alpha = thermal_adaptation.b
-    model.isotherm_widths_mm = w_mm
-    model.deflection_mm = defl_mm
-    model._d = deflection_adaptation.b
-    return deflection_adaptation.b, thermal_adaptation.b
+    # deflection_adaptation.update(defl_mm, np.exp(-model.c_defl / u0))
+    deflection_adaptation.update(defl_mm, v=u0)
+    dT = model.t_death - model.Ta
+    thermal_adaptation.update(w_mm, v=u0, dT=dT)
+    model.material.k = thermal_adaptation.k
+    model.material.rho = thermal_adaptation.rho
+    model.material.Cp = thermal_adaptation.Cp
+    model._b = deflection_adaptation.b
+    model._c_defl = deflection_adaptation.c
 
 
 def update(params: RunningParams, model,
            tipPos: ToolTipKF,
-           deflection_adaptation: ScalarLinearAlgabraicAdaptation,
-           thermal_adaptation: ScalarLinearAlgabraicAdaptation,
+           deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
+           thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
            u0: float, frame: np.ndarray, init_mpc: bool, mpc: Optional[do_mpc.controller.MPC]):
     """
     Update velocity and adaptive parameters
@@ -74,9 +77,11 @@ def update(params: RunningParams, model,
     """
     defl_px, _ = tipPos.update_with_measurement(frame)
     defl_mm = defl_px / thermal_px_per_mm
+    model.deflection_mm = defl_mm
     tip_lead_distance = 0
     w_px, ellipse = cv_isotherm_width(frame, model.isotherm_temps[0])
     w_mm = w_px / thermal_px_per_mm
+    model.width_mm = w_mm
     if ellipse is not None and tipPos.pos_px is not None:
         tip_lead_distance = find_wavefront_distance(ellipse, tipPos.pos_px) / thermal_px_per_mm
     update_adaptive_params(model, deflection_adaptation, thermal_adaptation, defl_mm, w_mm, u0)
@@ -90,15 +95,6 @@ def update(params: RunningParams, model,
     else:
         u0 = model.find_optimal_velocity()
     return u0, defl_mm, w_mm, init_mpc
-
-def Tc(dT: float, material: MaterialProperties, P: float):
-    """
-    Calculate the dimensionless temperature
-    :param dT: Temperature difference [K]
-    :param material: Material properties
-    :param P: Power [W]
-    """
-    return 2 * np.pi * material.k * dT / P
 
 def setup_mpc(model, mpc, thermal_adaptation, deflection_adaptation, r):
     mpc.set_objective(mterm=model.aux['mterm'], lterm=model.aux['lterm'])
@@ -117,10 +113,8 @@ def setup_mpc(model, mpc, thermal_adaptation, deflection_adaptation, r):
 
     mpc.set_tvp_fun(tvp_fun)
     mpc.u0 = (v_min + v_max) / 2
-    init_mpc = False
     mpc.setup()
 
-    ## Setup plotting
     return MPCPlotter(mpc.data, isotherm_temps=model.isotherm_temps)
 
 def main(model,
@@ -145,8 +139,10 @@ def main(model,
     tipPos = ToolTipKF(0.7)
 
     ## Initialize the parameter adaptation
-    thermal_adaptation = ScalarLinearAlgabraicAdaptation(b=model.material.alpha, gamma=0.01)
-    deflection_adaptation = ScalarLinearAlgabraicAdaptation(b=0.1, gamma=0.5)
+    # thermal_adaptation = ScalarLinearAlgabraicAdaptation(b=model.material.alpha, gamma=0.01)
+    thermal_adaptation = ThermalAdaptation(np.array([model._P]), labels=['P'])
+    # deflection_adaptation = ScalarLinearAlgabraicAdaptation(b=0.1, gamma=0.5)
+    deflection_adaptation = DeflectionAdaptation(np.array([0, 0, 1, 10, 0.5]), labels=['d', 'd_dot', 'k', 'b', 'c'])
 
     #############################
 
@@ -154,23 +150,28 @@ def main(model,
         plotter = setup_mpc(model, mpc, thermal_adaptation, deflection_adaptation, r)
 
     else:
-        plotter = GenericPlotter(n_plots=5,
-                                 labels=['Widths', 'Velocities', 'Deflections', 'Deflection Adaptation', 'Thermal Adaptation'],
+        plotter = GenericPlotter(n_plots=3,
+                                 labels=['Widths', 'Velocities', 'Deflections'],
                                  x_label='Time [s]',
                                  y_labels=[r'$\text{Widths [mm]}$',
                                            r'$\text{Velocities [mm/s]}$',
-                                           r'$\delta \text{[mm]}$',
-                                           r'$d$',
-                                           r'$\alpha$'])
+                                           r'$\delta \text{[mm]}$'])
+    if params.plot_adaptive_params:
+        deflection_plotter = AdaptiveParameterPlotter(deflection_adaptation)
+        thermal_plotter = AdaptiveParameterPlotter(thermal_adaptation)
+    else:
+        deflection_plotter = None
+        thermal_plotter = None
+
 
     if params.exp_type == ExperimentType.PRERECORDED:
-        prerecorded_experiment(params, model, tipPos, tb, t3, plotter, mpc, thermal_adaptation, deflection_adaptation)
+        prerecorded_experiment(params, model, tipPos, plotter, mpc, thermal_adaptation, deflection_adaptation, deflection_plotter, thermal_plotter)
 
     elif params.exp_type == ExperimentType.SIMULATED:
-        simulated_experiment(params, model, tipPos, tb, t3, plotter, mpc, thermal_adaptation, deflection_adaptation)
+        simulated_experiment(params, model, plotter, mpc, thermal_adaptation, deflection_adaptation, deflection_plotter, thermal_plotter)
 
     elif params.exp_type == ExperimentType.REAL:
-        real_experiment(params, model, tipPos, tb, t3, plotter, mpc, thermal_adaptation, deflection_adaptation)
+        real_experiment(params, model, tipPos, tb, t3, plotter, mpc, thermal_adaptation, deflection_adaptation, deflection_plotter, thermal_plotter)
 
     plt.show()
     if tb is not None:
@@ -179,7 +180,35 @@ def main(model,
         t3.release()
 
 
-def real_experiment(params: RunningParams, model, tipPos, tb, t3, plotter, mpc, thermal_adaptation: ScalarLinearAlgabraicAdaptation, deflection_adaptation: ScalarLinearAlgabraicAdaptation):
+def plot(params: RunningParams, plotter: GenericPlotter | MPCPlotter, w_mm: float, defl_mm: float, u0: float,
+         deflection_plotter:Optional[AdaptiveParameterPlotter]=None, thermal_plotter:Optional[AdaptiveParameterPlotter]=None):
+    """
+    :param params: Running parameters
+    :param plotter: Plotter object
+    :param w_mm: Width [mm]
+    :param defl_mm: Deflection [mm]
+    :param u0: Velocity [mm/s]
+    :param deflection_plotter: Deflection plotter object
+    :param thermal_plotter: Thermal plotter object
+    """
+    if params.mpc:
+        plotter.plot()
+    else:
+        plotter.plot([w_mm, u0, defl_mm])
+    if deflection_plotter is not None:
+        deflection_plotter.plot()
+    if thermal_plotter is not None:
+        thermal_plotter.plot()
+    fignums = [p.fig.number for p in [plotter, deflection_plotter, thermal_plotter] if p is not None]
+    if not all([plt.fignum_exists(f) for f in fignums]):
+        return False
+    return True
+
+
+def real_experiment(params: RunningParams, model, tipPos, tb, t3, plotter, mpc,
+                    thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
+                    deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
+                    deflection_plotter, thermal_plotter):
     u0 = (v_min + v_max) / 2
     data_log = pd.DataFrame(
         columns=['widths_mm', 'velocities', 'deflections_mm', 'thermal_frames', 'damping_estimates', 'thermal_diffusivity_estimates'])
@@ -202,19 +231,16 @@ def real_experiment(params: RunningParams, model, tipPos, tb, t3, plotter, mpc, 
         color_frame = thermal_frame_to_color(thermal_arr)
         cv.imshow("Frame", color_frame)
 
-        u0, defl_mm, w_mm, init_mpc = update(params, model, tipPos, deflection_adaptation, thermal_adaptation, u0, thermal_arr, init_mpc, mpc)
         if not params.adaptive_velocity:
             u0 = params.constant_velocity
         else:
-            if params.mpc:
-                plotter.plot()
-            else:
-                plotter.plot([w_mm, u0, defl_mm, thermal_adaptation.b, deflection_adaptation.b])
-
+            u0, defl_mm, w_mm, init_mpc = update(params, model, tipPos, deflection_adaptation, thermal_adaptation, u0, thermal_arr, init_mpc, mpc)
+            if not plot(params, plotter,w_mm, defl_mm, u0, deflection_plotter, thermal_plotter):
+                break
         tb.set_speed(u0)
         data_log.loc[len(data_log)] = [w_mm, mpc.u0 if params.adaptive_velocity else params.constant_velocity,
                                        defl_mm,
-                                       thermal_arr, deflection_adaptation.b, thermal_adaptation.b]
+                                       thermal_arr, deflection_adaptation.b, thermal_adaptation.alpha]
         if cv.waitKey(1) & 0xFF == ord('q'):
             break
 
@@ -225,7 +251,10 @@ def real_experiment(params: RunningParams, model, tipPos, tb, t3, plotter, mpc, 
         fname = f"{params.log_save_dir}/data_{mode}_{date.strftime('%Y-%m-%d-%H:%M')}.pkl"
         data_log.to_pickle(fname)
 
-def simulated_experiment(params: RunningParams, model, tipPos, tb, t3, plotter, mpc, thermal_adaptation: ScalarLinearAlgabraicAdaptation, deflection_adaptation: ScalarLinearAlgabraicAdaptation):
+def simulated_experiment(params: RunningParams, model, plotter, mpc,
+                         thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
+                         deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
+                         deflection_plotter, thermal_plotter):
     simulator = do_mpc.simulator.Simulator(model)
     simulator.set_param(t_step=1 / 24, integration_tool='idas')
     sim_tvp = simulator.get_tvp_template()
@@ -246,36 +275,41 @@ def simulated_experiment(params: RunningParams, model, tipPos, tb, t3, plotter, 
     mpc.set_initial_guess()
     for _ in tqdm.trange(n_steps):
         u0 = mpc.make_step(x0)
-        defl = deflection_adaptation.b * np.exp(-model.c_defl / u0.item()) * np.random.normal(1, 0.05)
-        if defl < 0:
-            defl = 0
-        deflection_adaptation.update(defl, u0.item())
+        defl_mm = deflection_adaptation.b * np.exp(-model._c_defl / u0.item()) * np.random.normal(1, 0.05)
+        if defl_mm < 0:
+            defl_mm = 0
+        deflection_adaptation.update(defl_mm, u0.item())
         u_prime = (2 * model.material.alpha / u0) * np.sqrt(
             u0 / (4 * np.pi * model.material.k * model.material.alpha * (model.t_death - model.Ta)))
         thermal_adaptation.update(x0.item(), u_prime.item())
-        model.deflection_mm = defl
+        model.deflection_mm = defl_mm
         x0 = simulator.make_step(u0)
-        if params.mpc:
-            plotter.plot()
-        else:
-            plotter.plot([x0, u0, defl, thermal_adaptation.b, deflection_adaptation.b])
+        if not plot(params, plotter, x0, defl_mm, u0, deflection_plotter, thermal_plotter):
+            break
+        deflection_plotter.plot()
+        thermal_plotter.plot()
         plt.pause(0.0001)
 
-def prerecorded_experiment(params: RunningParams, model, tipPos, tb, t3, plotter, mpc, thermal_adaptation: ScalarLinearAlgabraicAdaptation, deflection_adaptation: ScalarLinearAlgabraicAdaptation):
+def prerecorded_experiment(params: RunningParams, model, tipPos, plotter, mpc,
+                           thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
+                           deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
+                           deflection_plotter, thermal_plotter):
+
     data = pkl.load(open(params.log_file_to_load, 'rb'))
     if isinstance(data, LoggingData):
         thermal_frames = data.thermal_frames
         bs = data.damping_estimates
+        vs = data.velocities
     else:
         thermal_frames = data['thermal_frames']
         bs = data['damping_estimates']
-    u0 = (v_min + v_max) / 2
+        vs = data['velocities']
     init_mpc = False
-    for i, (frame, b) in enumerate(zip(tqdm.tqdm(thermal_frames), bs)):
-        u0, defl_mm, w_mm, init_mpc = update(params, model, tipPos, deflection_adaptation, thermal_adaptation, u0,
+    for i, (frame, b, v) in enumerate(zip(tqdm.tqdm(thermal_frames), bs, vs)):
+        u0, defl_mm, w_mm, init_mpc = update(params, model, tipPos, deflection_adaptation, thermal_adaptation, v,
                                              frame, init_mpc, mpc)
-        if params.mpc:
-            plotter.plot()
-        else:
-            plotter.plot([w_mm, u0, defl_mm, thermal_adaptation.b, deflection_adaptation.b])
+        if not plot(params, plotter, w_mm, defl_mm, u0, deflection_plotter, thermal_plotter):
+            break
+        deflection_plotter.plot()
+        thermal_plotter.plot()
         plt.pause(0.0001)

@@ -35,7 +35,7 @@ class MaterialProperties:
     @property
     def alpha(self):
         if self._alpha is None:
-            self._alpha = self.k / (self.rho * self.Cp)
+            return self.k / (self.rho * self.Cp)
         return self._alpha
 
     @alpha.setter
@@ -44,6 +44,15 @@ class MaterialProperties:
             self._alpha = 1e-6
         else:
             self._alpha = value
+
+def Tc(dT: float, material: MaterialProperties, P: float):
+    """
+    Calculate the dimensionless temperature
+    :param dT: Temperature difference [K]
+    :param material: Material properties
+    :param P: Power [W]
+    """
+    return 2 * np.pi * material.k * dT / P
 
 humanTissue = MaterialProperties(rho=1090e-9, Cp=3421, k=0.46e-3)
 hydrogelPhantom = MaterialProperties(rho=1310e-9, Cp=3140, k=0.6e-3)
@@ -120,7 +129,7 @@ class ElectrosurgeryCostMinimizationModel(ABC):
         pass
 
 class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
-    c_defl = 0.5  # deflection damping constant [s]
+    _c_defl = 0.5  # deflection damping constant [s]
     t_death = 60  # death temperature [C]
     Ta = 20 # ambient temperature [C]
 
@@ -130,7 +139,7 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
         self._isotherm_temps = np.array([self.t_death])
         self._isotherm_measurement_mm = 0
         self._deflection_measurement_mm = 0
-        self._d = 0.5
+        self._b = 0.5
         self._P = 45
         self._u0 = (vlim[0] + vlim[1]) / 2
         self.r = r  # input penalty
@@ -138,14 +147,13 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
         self.qd = qd
 
     def cost_function(self, v) -> float:
-        return self.qw * self.isotherm_width_model(v) + self.qd * self.deflection_model(v) + self.r * (v-self._u0)**2
+        return self.qw * self.isotherm_width_model(v)**2 + self.qd * self.deflection_model(v)**2 + self.r * (v-self._u0)**2
 
     def isotherm_width_model(self, v: float) -> float:
-        Tc = 2 * np.pi * self.material.k * (self.t_death - self.Ta) / self._P
-        return ymax(self.material.alpha, v, Tc)
+        return ymax(self.material.alpha, v, Tc(self.t_death - self.Ta, self.material, self._P))
 
     def deflection_model(self, v: float) -> float:
-        return self._d * np.exp(-self.c_defl / v)
+        return self._b * np.exp(-self._c_defl / v)
 
     def find_optimal_velocity(self):
         res = minimize_scalar(self.cost_function, bounds=[self._vmin, self._vmax], method='bounded')
@@ -180,7 +188,7 @@ class ElectrosurgeryMPCModel(ABC, do_mpc.model.Model):
     def __init__(self, material: MaterialProperties, model_type: str = "continuous"):
         super().__init__(model_type)
         self.n_isotherms: int = 1
-        self._material = material
+        self.material = material
 
 
     @property
