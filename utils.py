@@ -2,10 +2,7 @@ import numpy as np
 import cv2 as cv
 import cmapy
 from dataclasses import dataclass, field
-import do_mpc
 import pickle as pkl
-import matplotlib.pyplot as plt
-from matplotlib import rcParams
 
 
 def thermal_frame_to_color(thermal_frame):
@@ -20,7 +17,7 @@ def draw_info_on_frame(frame, deflection, width, velocity, tool_tip_pos):
     cv.putText(frame, f"Velocity: {velocity:.2f} mm/s",
                (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     if tool_tip_pos is not None:
-        cv.circle(frame, (int(tool_tip_pos[1]), int(tool_tip_pos[0])), 3, (0, 255, 0), -1)
+        cv.circle(frame, (int(tool_tip_pos[0]), int(tool_tip_pos[1])), 3, (0, 255, 0), -1)
     return frame
 
 def point_in_ellipse(x, y, ellipse) -> bool:
@@ -61,11 +58,6 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> (float, tuple | No
     blur_frame = cv.GaussianBlur(t_frame, (5, 5), 0)
     binary_frame = (blur_frame > t_death).astype(np.uint8)
     contours, hierarchy = cv.findContours(binary_frame, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-    norm_frame = cv.normalize(t_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
-    # if len(contours) > 0:
-    #     contours = contours[0]
-    # else:
-    #     return 0, None
     if len(contours) == 0:
         return 0, None
     ctr = max(contours, key=cv.contourArea)
@@ -73,14 +65,7 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> (float, tuple | No
     hull = cv.convexHull(ctr)
     if hull is None or len(hull) < 5:
         return 0, None
-    # if cv.contourArea(hull) < 1:
-    #     return 0, None
     ellipse = cv.fitEllipse(hull)
-    # norm_frame = cv.ellipse(norm_frame, ellipse, (255, 255, 255), 2)
-    # cv.imshow("frame", cv.applyColorMap(norm_frame, cmapy.cmap('hot')))
-    # cv.waitKey(0)
-    # rect = cv.minAreaRect(hull)
-    # (_, _), (width, height), angle = rect
     w = min(*ellipse[1]) / 2
     return w, ellipse
 
@@ -88,9 +73,7 @@ def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
     """
     Find the location of the tooltip
     :param therm_frame: Temperature field [C]
-    :param t_death: Isotherm temperature [C]
-    # :param last_tool_tip: Last known tool tip location
-    # :param ellipse: Isotherm ellipse (optional)
+    :param t_death: Iotherm temperature [C]
     :return: x, y location of the tooltip [px]
     """
 
@@ -102,7 +85,7 @@ def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
         corners = corners > 0.01 * corners.max()
         # return coordinate of corner-most true value
         coordinates = np.where(corners)
-        left_most = np.argmin(coordinates[1])
+        left_most = np.argmax(coordinates[1])
         tip = (coordinates[0][left_most], coordinates[1][left_most])
         return tip
     else:
@@ -116,7 +99,6 @@ def find_wavefront_distance(ellipse: tuple, tool_tip: tuple) -> float:
     :return: Distance from the tool tip to the wavefront [px]
     """
     # find leading edge (furthest along the major axis) of the rotated ellipse
-    # tool_tip = np.array([tool_tip[0], tool_tip[1]])
     tool_tip = np.array([tool_tip[1], tool_tip[0]])
     angle = ellipse[2] * np.pi / 180
     if angle > np.pi / 2:
@@ -130,121 +112,6 @@ def find_wavefront_distance(ellipse: tuple, tool_tip: tuple) -> float:
     x_dir = np.sign(np.dot(ellipse_tip - tool_tip, np.array([1, 0])))
     return x_dir * np.linalg.norm(tool_tip - ellipse_tip)
 
-class AdaptiveParameterPlotter:
-    def __init__(self, adaptive_model):
-        self._adaptive_model = adaptive_model
-        self.n = len(adaptive_model.labels)
-        if self.n == 1:
-            self.fig, self.axs = plt.subplots(1, figsize=(16, 9), sharex=True)
-            self.lines = []
-            line, = self.axs.plot([], [], label=adaptive_model.labels[0])
-            self.lines.append(line)
-            self.axs.set_ylabel(adaptive_model.labels[0])
-            self.axs.legend()
-        else:
-            self.fig, self.axs = plt.subplots(self.n, figsize=(16, 9), sharex=True)
-            self.lines = []
-            for i, (ax, label) in enumerate(zip(self.axs, adaptive_model.labels)):
-                line, = self.axs[i].plot([], [], label=label)
-                self.lines.append(line)
-                self.axs[i].set_ylabel(label)
-                self.axs[i].legend()
-
-    def plot(self):
-        if self.n == 1:
-            self.lines[0].set_data(range(len(self._adaptive_model.data[self._adaptive_model.labels[0]])), self._adaptive_model.data[self._adaptive_model.labels[0]])
-            self.axs.relim()
-            self.axs.autoscale_view()
-        else:
-            for i, label in enumerate(self._adaptive_model.labels):
-                self.lines[i].set_data(range(len(self._adaptive_model.data[label])), self._adaptive_model.data[label])
-                self.axs[i].relim()
-                self.axs[i].autoscale_view()
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
-
-
-class GenericPlotter:
-    def __init__(self, n_plots: int, labels: list[str], x_label: str, y_labels: list[str]):
-        plt.ion()
-        rcParams['text.usetex'] = True
-        rcParams['text.latex.preamble'] = r'\usepackage{amsmath} \usepackage{siunitx}'
-        rcParams['axes.grid'] = True
-        rcParams['lines.linewidth'] = 2.0
-        rcParams['axes.labelsize'] = 'xx-large'
-        rcParams['xtick.labelsize'] = 'xx-large'
-        rcParams['ytick.labelsize'] = 'xx-large'
-        self._data = {labels[i]: [] for i in range(n_plots)}
-        assert len(labels) == n_plots == len(y_labels)
-        self.fig, self.axs = plt.subplots(n_plots, figsize=(16, 9), sharex=True)
-        self.lines = []
-        for i, ax in enumerate(self.axs):
-            line, = ax.plot([], [], label=labels[i])
-            self.lines.append(line)
-            ax.set_ylabel(y_labels[i])
-            ax.legend()
-        self.axs[-1].set_xlabel(x_label)
-
-    def plot(self, y: list[float]):
-        for i, label in enumerate(self._data.keys()):
-            self._data[label].append(y[i])
-            self.lines[i].set_data(range(len(self._data[label])), self._data[label])
-            self.axs[i].relim()
-            self.axs[i].autoscale_view()
-        self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
-
-
-
-class MPCPlotter:
-    def __init__(self, mpc_data: do_mpc.data.Data, isotherm_temps: list[float]):
-        plt.ion()
-        rcParams['text.usetex'] = True
-        rcParams['text.latex.preamble'] = r'\usepackage{amsmath} \usepackage{siunitx}'
-        rcParams['axes.grid'] = True
-        rcParams['lines.linewidth'] = 2.0
-        rcParams['axes.labelsize'] = 'xx-large'
-        rcParams['xtick.labelsize'] = 'xx-large'
-        rcParams['ytick.labelsize'] = 'xx-large'
-        self.fig, self.axs = plt.subplots(3, sharex=True, figsize=(16, 9))
-        for i in range(1, len(self.axs)-1):
-            self.axs[i].sharex(self.axs[0])
-            self.axs[i].tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
-        self.line_plots = []
-        self.graphics = do_mpc.graphics.Graphics(mpc_data)
-        isotherm_colors = ['lightcoral', 'orangered', 'orange']
-        for i, (temp, color) in enumerate(zip(isotherm_temps, isotherm_colors)):
-            self.graphics.add_line(var_type='_x', var_name=f'width_{i}', axis=self.axs[0], label=f'{temp:.2f}C', color=isotherm_colors[i%len(isotherm_colors)])
-        self.graphics.add_line(var_type='_x', var_name='tip_lead_dist', axis=self.axs[0], color='g', label='Tip Lead Distance')
-        self.graphics.add_line(var_type='_tvp', var_name='defl_meas', axis=self.axs[1], color='purple', label='Measured')
-        self.graphics.add_line(var_type='_z', var_name='deflection', axis=self.axs[1], color='b', linestyle='--', label='Predicted')
-        self.graphics.add_line(var_type='_u', var_name='u', axis=self.axs[2], color='b')
-        # self.graphics.add_line(var_type='_tvp', var_name='d', axis=self.axs[3])
-
-        self.axs[0].set_ylabel(r'$w~[\si[per-mode=fraction]{\milli\meter}]$')
-        self.axs[0].legend()
-        self.axs[1].set_ylabel(r'$d~[\si[per-mode=fraction]{\milli\meter}]$')
-        self.axs[1].legend()
-        self.axs[2].set_ylabel(r"$u~[\si[per-mode=fraction]{\milli\meter\per\second}]$")
-        # self.axs[3].set_ylabel(r'$\hat{d}$')
-        self.axs[-1].set_xlabel(r'$t~[\si[per-mode=fraction]{\second}]$')
-        self.fig.align_ylabels()
-
-
-    def plot(self, t_ind=None):
-        if t_ind is None:
-            self.graphics.plot_results()
-            self.graphics.plot_predictions()
-            self.graphics.reset_axes()
-            self.axs[-1].set_ylim(0, 10)
-
-        else:
-            self.graphics.plot_results(t_ind)
-            self.graphics.plot_predictions(t_ind)
-            self.graphics.reset_axes()
-
-    def __del__(self):
-        plt.ioff()
 
 
 @dataclass

@@ -24,12 +24,12 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         self.adaptive_velocity = tk.StringVar(value="y")
         self.constant_velocity = tk.DoubleVar(value=7)
         self.material_name = tk.StringVar(value="human")
-        self.model_name = tk.StringVar(value="pseudostatic")
+        self.model_name = tk.StringVar(value="minimization")
         self.n_horizons = tk.IntVar(value=10)
-        self.qd = tk.IntVar(value=1)
-        self.qw = tk.IntVar(value=25)
+        self.qd = tk.IntVar(value=10)
+        self.qw = tk.IntVar(value=1)
         self.r = tk.DoubleVar(value=0.1)
-        self.save_dir = tk.StringVar()
+        self.save_dir = tk.StringVar(value="./logs/")
         self.logFile = tk.StringVar()
         self.home = tk.BooleanVar(value=True)
         self.plot_adaptive_params = tk.BooleanVar(value=False)
@@ -44,8 +44,8 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         self.homing_button = self.exp_type_frame.SlideSwitch("Home", variable=self.home)
         self.plot_adaptive_params_button = self.exp_type_frame.SlideSwitch("Plot Adaptive Params", variable=self.plot_adaptive_params)
 
-        self.model_type_frame.Radiobutton("MPC", variable=self.model_name, value="pseudostatic", command=self.model_selection)
         self.model_type_frame.Radiobutton("Minimization", variable=self.model_name, value="minimization", command=self.model_selection)
+        self.model_type_frame.Radiobutton("MPC", variable=self.model_name, value="pseudostatic", command=self.model_selection)
         self.model_type_frame.Radiobutton("Constant Velocity", variable=self.model_name, value="constant_velocity", command=self.model_selection)
 
         self.material_type_frame.Radiobutton("Human Tissue", variable=self.material_name, value="human")
@@ -106,7 +106,7 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
             self.homing_button.config(state="disabled")
 
     def folderDialog(self):
-        filename = filedialog.askdirectory()
+        filename = filedialog.askdirectory(initialdir="./logs/")
         if filename == "":
             return
         self.save_dir.set(filename)
@@ -176,17 +176,17 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
                 messagebox.showerror("Warning", "Minimization model cannot be simulated")
                 return
 
-        # elif exp_type == ExperimentType.REAL:
-        #     try:
-        #         t3 = T3pro()
-        #     except serial.serialutil.SerialException:
-        #         messagebox.showerror("Error", "No T3pro found")
-        #         return
-        #     try:
-        #         tb = Testbed()
-        #     except serial.serialutil.SerialException:
-        #         messagebox.showerror("Error", "No Testbed found")
-        #         return
+        elif exp_type == ExperimentType.REAL:
+            try:
+                t3 = T3pro(port=2)
+            except serial.serialutil.SerialException:
+                messagebox.showerror("Error", "No T3pro found")
+                return
+            try:
+                tb = Testbed()
+            except serial.serialutil.SerialException:
+                messagebox.showerror("Error", "No Testbed found")
+                return
 
 
         if (save_dir:=self.save_dir.get()) == "" and exp_type == ExperimentType.REAL:

@@ -1,4 +1,5 @@
 from filterpy.kalman import UnscentedKalmanFilter, MerweScaledSigmaPoints
+from filterpy.common import Q_discrete_white_noise
 import numpy as np
 from models import ymax, Tc, MaterialProperties
 import scipy
@@ -101,7 +102,7 @@ class BoundedMerweScaledSigmaPoints(MerweScaledSigmaPoints):
         try:
             result = scipy.linalg.cholesky(x)
         except np.linalg.LinAlgError:
-            x = (x + x.T) / 2
+            x = (x + x.T) / 2 + np.eye(x.shape[0]) * 1e-6
             result = scipy.linalg.cholesky(x)
         return result
 
@@ -167,8 +168,7 @@ class UKFIdentification(ABC):
                                          fx=self.fx,
                                          points=self.points)
         self.ukf.x = w0
-        self._alpha_sq =1**2 # Fading memory factor
-        self._data = {label: [] for label in labels}
+        self._data = {label: [(w0[i], w0[i], w0[i])] for i, label in enumerate(self.labels)}
 
     @property
     def labels(self) -> list[str]:
@@ -199,15 +199,15 @@ class UKFIdentification(ABC):
         :return: Tuple of updated state estimate, a, b
         """
         self.ukf.predict(**kwargs)
-        # self.ukf.P *= self._alpha_sq
         self.ukf.update(measurement, **kwargs)
-        self._data = {label: self._data[label] + [value] for label, value in zip(self.labels, self.ukf.x)}
+        ci_low, ci_high = self.ukf.x - np.sqrt(np.diag(self.ukf.P)), self.ukf.x + 3 * np.sqrt(np.diag(self.ukf.P))
+        self._data = {label: self._data[label] + [(ci_low[i], self.ukf.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
         return self.ukf.x
 
     @property
-    def data(self) -> dict[str, list]:
+    def data(self) -> dict[str, list[tuple]]:
         """
-        Dictionary of parameter labels and values
+        Dictionary of parameter labels and values (with confidence intervals) [label: [(value, low_ci, high_ci)]]
         """
         return self._data
 
@@ -215,13 +215,14 @@ class UKFIdentification(ABC):
 class DeflectionAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
         """
-        :param w0: Initial parameter estimate [defl, defl_rate, k, b, c_defl]
+        :param w0: Initial parameter estimate [x, y, xd, yd, k, b, c_defl]
         """
-        super().__init__(w0, dim_z=2, labels=labels, lower_bounds=np.array([-np.inf, -np.inf, 0, 0, 0]))
+        super().__init__(w0, dim_z=2, labels=labels, lower_bounds=np.array([-np.inf, -np.inf, -np.inf, -np.inf, 0, 0, 0]))
         assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
-        self.ukf.P = np.diag([4, 4, 1, 1, 1])
-        self.ukf.R = 1
-        self.ukf.Q = np.diag([4, 4, 1, 1, 1])
+        self.ukf.P = np.diag([0, 0, 0, 0, 1, 1, 1])
+        self.ukf.R = 1 * np.eye(2)
+        self.ukf.Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=0.1, block_size=2), np.zeros((4, 3))],
+                                 [np.zeros((3, 4)), np.diag([1, 1, 1])]])
 
     @property
     def b(self):
@@ -234,6 +235,10 @@ class DeflectionAdaptation(UKFIdentification):
     @property
     def k(self):
         return self.ukf.x[2]
+
+    @property
+    def defl_mm(self):
+        return np.linalg.norm(self.ukf.x[0:2])
 
     def hx(self, x, **kwargs):
         """
@@ -248,54 +253,62 @@ class DeflectionAdaptation(UKFIdentification):
         State transition function
         """
         v = kwargs.get("v")
-        x[0] += x[1] * dt
-        if 0 < x[1] < v:
-            F = x[3] * np.exp(-x[4] / (v - x[1]))
+        x[0] += x[2] * dt
+        x[1] += x[3] * dt
+        v_tool = np.sqrt(x[2] ** 2 + x[3] ** 2) * -np.sign(x[2])
+        if 0 < v_tool < v:
+            F = x[5] * np.exp(-x[6] / (v - v_tool + 1e-6)) + x[4] * np.linalg.norm(x[0:2])
         else:
-            F = x[3] * np.exp(-x[4] / (v+1e-6))
-        x[1] += (-x[2] * x[0] + F) * dt
+            F = x[5] * np.exp(-x[6] / (v + 1e-6))  + x[4] * np.linalg.norm(x[0:2])
+        x[0:2] -= F * np.array([x[0], x[1]]) * dt
         return x
 
 class ThermalAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
         """
-        :param w0: Initial parameter estimate  [q, k]
+        :param w0: Initial parameter estimate  [w, q, k]
         """
-        super().__init__(w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0.1e-3]))
-        self.ukf.P = np.diag([4, 1e-3])
-        self.ukf.R = 2
-        self.ukf.Q = np.diag([4, 1e-4])
+        super().__init__(w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0, 0]))
+        self.ukf.P = np.diag([0, 5, 1e-8])
+        self.ukf.R = 1
+        self.ukf.Q = np.diag([1, 1, 1e-8])
         self.Cp = 3421
         self.rho = 1090e-9
         # self.k = 0.46e-3
 
     @property
     def k(self):
-        return self.ukf.x[1]
+        return self.ukf.x[2]
 
     @property
     def q(self):
-        return self.ukf.x[0]
+        return self.ukf.x[1]
 
     @property
     def alpha(self):
         return self.k / (self.rho * self.Cp)
 
+    @property
+    def w_mm(self):
+        return self.ukf.x[0]
+
     def hx(self, x, **kwargs):
         """
         Measurement function
         """
-        v = kwargs.get("v")
-        dT = kwargs.get("dT")
-        alpha = x[1] / (self.rho * self.Cp)
-        material = MaterialProperties(k=x[1], rho=self.rho, Cp=self.Cp)
-        y = ymax(alpha, v, Tc(dT, material, x[0]))
-        if np.isinf(y) or np.isnan(y):
-            return self.ukf.y
-        return np.array([y])
+        return np.array([x[0]])
 
     def fx(self, x, dt, **kwargs):
         """
         State transition function
         """
+        v = kwargs.get("v")
+        dT = kwargs.get("dT")
+        material = MaterialProperties(k=x[2], rho=self.rho, Cp=self.Cp)
+        y = ymax(v, material, x[1], dT)
+        if (Ro:= 1/Tc(v, material, x[1])) < 0.3:
+            print(f"Regime IV, Ro = {Ro:.2f}")
+        if np.isinf(y) or np.isnan(y):
+            return self.ukf.x
+        x[0] = y
         return x
