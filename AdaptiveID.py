@@ -1,4 +1,5 @@
 from filterpy.kalman import UnscentedKalmanFilter, MerweScaledSigmaPoints
+from SquareRootUnscentedKalmanFilter import SquareRootUnscentedKalmanFilterParameterEstimation, SquareRootUnscentedKalmanFilter, SquareRootMerweScaledSigmaPoints
 from filterpy.common import Q_discrete_white_noise
 import numpy as np
 from models import ymax, Tc, MaterialProperties
@@ -215,26 +216,26 @@ class UKFIdentification(ABC):
 class DeflectionAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
         """
-        :param w0: Initial parameter estimate [x, y, xd, yd, k, b, c_defl]
+        :param w0: Initial parameter estimate [x, y, xd, yd, b, c_defl]
         """
-        super().__init__(w0, dim_z=2, labels=labels, lower_bounds=np.array([-np.inf, -np.inf, -np.inf, -np.inf, 0, 0, 0]))
+        super().__init__(w0, dim_z=2, labels=labels, lower_bounds=np.array([-np.inf, -np.inf, -np.inf, -np.inf, 0, 0]))
         assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
-        self.ukf.P = np.diag([0, 0, 0, 0, 1, 1, 1])
+        self.ukf.P = np.diag([1, 1, 1, 1, 1, 1])
         self.ukf.R = 1 * np.eye(2)
-        self.ukf.Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=0.1, block_size=2), np.zeros((4, 3))],
-                                 [np.zeros((3, 4)), np.diag([1, 1, 1])]])
+        self.ukf.Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=0.1**2, block_size=2), np.zeros((2, 3))],
+                                 [np.zeros((2, 4)), np.diag([1, 1])]])
 
     @property
     def b(self):
-        return self.ukf.x[3]
+        return self.ukf.x[5]
 
     @property
     def c_defl(self):
-        return self.ukf.x[4]
+        return self.ukf.x[6]
 
     @property
     def k(self):
-        return self.ukf.x[2]
+        return 1.3
 
     @property
     def defl_mm(self):
@@ -259,34 +260,38 @@ class DeflectionAdaptation(UKFIdentification):
         if 0 < v_tool < v:
             F = x[5] * np.exp(-x[6] / (v - v_tool + 1e-6)) + x[4] * np.linalg.norm(x[0:2])
         else:
-            F = x[5] * np.exp(-x[6] / (v + 1e-6))  + x[4] * np.linalg.norm(x[0:2])
+            F = x[5] * np.exp(-x[6] / (v + 1e-6))  + self.k * np.linalg.norm(x[0:2])
         x[0:2] -= F * np.array([x[0], x[1]]) * dt
         return x
 
 class ThermalAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
         """
-        :param w0: Initial parameter estimate  [w, q, k]
+        :param w0: Initial parameter estimate  [w, q, k, Cp] in mm, W, W/mK, J/kgK
         """
-        super().__init__(w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0, 0]))
-        self.ukf.P = np.diag([0, 5, 1e-8])
+        super().__init__(w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0, 0, 0]))
+        self.ukf.P = np.diag([0, 5, 0.1**2, 100**2])
         self.ukf.R = 1
-        self.ukf.Q = np.diag([1, 1, 1e-8])
-        self.Cp = 3421
-        self.rho = 1090e-9
+        self.ukf.Q = np.diag([1, 1, 0.1**2, 50**2])
+        # self.Cp = 3421
+        self.rho = 1090  # kg/m^3
         # self.k = 0.46e-3
 
     @property
-    def k(self):
-        return self.ukf.x[2]
+    def k_w_mmK(self):
+        return self.ukf.x[2] * 1e-3
 
     @property
     def q(self):
         return self.ukf.x[1]
 
     @property
+    def Cp(self):
+        return self.ukf.x[3]
+
+    @property
     def alpha(self):
-        return self.k / (self.rho * self.Cp)
+        return self.ukf.x[2] / (self.rho * self.Cp)
 
     @property
     def w_mm(self):
@@ -304,7 +309,7 @@ class ThermalAdaptation(UKFIdentification):
         """
         v = kwargs.get("v")
         dT = kwargs.get("dT")
-        material = MaterialProperties(k=x[2], rho=self.rho, Cp=self.Cp)
+        material = MaterialProperties(k=self.k_w_mmK, rho=self.rho*1e-9, Cp=self.Cp)
         y = ymax(v, material, x[1], dT)
         if (Ro:= 1/Tc(v, material, x[1])) < 0.3:
             print(f"Regime IV, Ro = {Ro:.2f}")

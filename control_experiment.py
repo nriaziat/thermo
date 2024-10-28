@@ -1,6 +1,5 @@
 import do_mpc.controller
 from cmapy import color
-
 from T3pro import T3pro
 from testbed import Testbed
 from AdaptiveID import *
@@ -53,7 +52,7 @@ def update_adaptive_params(model, deflection_adaptation: ScalarLinearAlgabraicAd
     deflection_adaptation.update(tip_displacement_mm, v=u0)
     dT = model.t_death - model.Ta
     thermal_adaptation.update(w_mm, v=u0, dT=dT)
-    model.material.k = thermal_adaptation.k
+    model.material.k = thermal_adaptation.k_w_mmK
     model.material.rho = thermal_adaptation.rho
     model.material.Cp = thermal_adaptation.Cp
     model._b = deflection_adaptation.b
@@ -145,9 +144,9 @@ def main(model,
 
     ## Initialize the parameter adaptation
     # thermal_adaptation = ScalarLinearAlgabraicAdaptation(b=model.material.alpha, gamma=0.01)
-    thermal_adaptation = ThermalAdaptation(np.array([0, model._P, model.material.k]), labels=['w', 'P', 'k'])
+    thermal_adaptation = ThermalAdaptation(np.array([0, model._P, model.material.k * 1e3, model.material.Cp]), labels=['w', 'P', 'k', 'Cp'])
     # deflection_adaptation = ScalarLinearAlgabraicAdaptation(b=0.1, gamma=0.5)
-    deflection_adaptation = DeflectionAdaptation(np.array([0, 0, 0, 0, 1, 10, 0.5]), labels=['x', 'y', 'x_dot', 'y_dot', 'k', 'b', 'c_defl'])
+    deflection_adaptation = DeflectionAdaptation(np.array([0, 0, 0, 0, 10, 0.5]), labels=['x', 'y', 'x_dot', 'y_dot', 'b', 'c_defl'])
 
     #############################
 
