@@ -158,8 +158,10 @@ def cholupdate(L, W, beta):
             Ljj_pow2 = L[j, j] ** 2
             wji_pow2 = W[j, i] ** 2
             if Ljj_pow2 + (beta / b) * wji_pow2 < 0:
-                raise ValueError(f"Matrix is not positive definite. L[{j}, {j}] = {L[j, j]}, W[{j}, {i}] = {beta / b* W[j, i]}")
-            L_out[j, j] = np.sqrt(Ljj_pow2 + (beta / b) * wji_pow2)
+                # raise ValueError(f"Matrix is not positive definite. L[{j}, {j}] = {L[j, j]}, W[{j}, {i}] = {beta / b* W[j, i]}")
+                L_out[j, j] = 0
+            else:
+                L_out[j, j] = np.sqrt(Ljj_pow2 + (beta / b) * wji_pow2)
             upsilon = (Ljj_pow2 * b) + (beta * wji_pow2)
 
             for k in range(j + 1, m):

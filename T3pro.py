@@ -348,7 +348,7 @@ class T3pro:
 
 if __name__ == "__main__":
     # writer = cv2.VideoWriter('output_16.avi', cv2.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
-    with T3pro() as t3:
+    with T3pro(port=2) as t3:
         while True:
             ret, frame = t3.read()
             _, lut = t3.info()

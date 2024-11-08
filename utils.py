@@ -4,12 +4,26 @@ import cmapy
 from dataclasses import dataclass, field
 import pickle as pkl
 
+def list_of_frames_to_video(frames, filename, fps=24):
+    """
+    Save a list of frames to a video file
+    :param frames: List of frames
+    :param filename: Output filename
+    :param fps: Frames per second
+    """
+    h, w, _ = frames[0].shape
+    fourcc = cv.VideoWriter.fourcc(*'mp4v')
+    out = cv.VideoWriter(filename, fourcc, fps, (w, h))
+    for frame in frames:
+        out.write(frame)
+    out.release()
+
 
 def thermal_frame_to_color(thermal_frame):
     norm_frame = cv.normalize(thermal_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
     return cv.applyColorMap(norm_frame, cmapy.cmap('hot'))
 
-def draw_info_on_frame(frame, deflection, width, velocity, tool_tip_pos):
+def draw_info_on_frame(frame, deflection, width, velocity, tool_tip_pos, neutral_pos):
     cv.putText(frame, f"Deflection: {deflection:.2f} mm",
            (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     cv.putText(frame, f"Width: {width:.2f} mm",
@@ -18,6 +32,8 @@ def draw_info_on_frame(frame, deflection, width, velocity, tool_tip_pos):
                (10, 60), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     if tool_tip_pos is not None:
         cv.circle(frame, (int(tool_tip_pos[0]), int(tool_tip_pos[1])), 3, (0, 255, 0), -1)
+    if neutral_pos is not None:
+        cv.circle(frame, (int(neutral_pos[0]), int(neutral_pos[1])), 3, (0, 0, 255), -1)
     return frame
 
 def point_in_ellipse(x, y, ellipse) -> bool:
@@ -80,16 +96,26 @@ def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
     if (therm_frame > t_death).any():
         # return np.unravel_index(np.argmax(therm_frame), therm_frame.shape)
         top_temps = therm_frame > t_death
-        corners = cv.cornerHarris(top_temps.astype(np.uint8), 2, 3, 0.04)
+        corners = cv.cornerHarris(top_temps.astype(np.uint8), 5, 3, 0.07)
         corners = cv.dilate(corners, None)
-        corners = corners > 0.01 * corners.max()
+        corners = corners * (therm_frame - therm_frame.min()) > 0.1 * corners.max() * (therm_frame.max() - therm_frame.min())
+        # cv.imshow("corners", corners.astype(np.uint8) * 255)
         # return coordinate of corner-most true value
         coordinates = np.where(corners)
-        left_most = np.argmax(coordinates[1])
-        tip = (coordinates[0][left_most], coordinates[1][left_most])
+        right_most = np.argmax(coordinates[1])
+        # row = y, col = x
+        tip = (coordinates[1][right_most], coordinates[0][right_most])
         return tip
     else:
         return None
+
+def find_hottest_point(therm_frame: np.ndarray) -> tuple | None:
+    """
+    Find the location of the hottest point
+    :param therm_frame: Temperature field [C]
+    :return: x, y location of the hottest point [px]
+    """
+    return np.unravel_index(np.argmax(therm_frame), therm_frame.shape)[::-1]
 
 def find_wavefront_distance(ellipse: tuple, tool_tip: tuple) -> float:
     """

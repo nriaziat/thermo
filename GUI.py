@@ -21,12 +21,11 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         self.AccentButton("Start Experiment", command=self.start_experiment)
 
         self.exp_type = tk.StringVar(value=ExperimentType.REAL)
-        self.adaptive_velocity = tk.StringVar(value="y")
         self.constant_velocity = tk.DoubleVar(value=7)
         self.material_name = tk.StringVar(value="human")
         self.model_name = tk.StringVar(value="minimization")
         self.n_horizons = tk.IntVar(value=10)
-        self.qd = tk.IntVar(value=10)
+        self.qd = tk.IntVar(value=1)
         self.qw = tk.IntVar(value=1)
         self.r = tk.DoubleVar(value=0.1)
         self.save_dir = tk.StringVar(value="./logs/")
@@ -117,29 +116,35 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
     def loadLogDialog(self):
         filename = filedialog.askopenfilename(filetypes=[("Log Files", "*.pkl")])
         self.logFile.set(filename)
+        if isinstance(filename, tuple):
+            return
         self.load_indicator.config(text=f"Load from: {filename.split('/')[-1]}")
         self.exp_type.set(ExperimentType.PRERECORDED)
         self.exp_type_selection()
 
     def start_experiment(self):
 
-        adaptive_velocity = self.adaptive_velocity.get() == "y"
-        constant_velocity = float(self.constant_velocity.get()) if not adaptive_velocity else None
         material = humanTissue if self.material_name.get() == "human" else hydrogelPhantom
 
         if (name := self.model_name.get()) == "minimization":
             model = SteadyStateMinimizationModel(material)
+            adaptive_velocity = True
         elif name == "pseudostatic":
             model = PseudoStaticModel(material)
+            adaptive_velocity = True
         elif name == "constant_velocity":
-            messagebox.showerror("Constant velocity is not implemented yet.")
-            return
+            model = SteadyStateMinimizationModel(material)
+            mpc = None
+            adaptive_velocity = False
+
+        constant_velocity = float(self.constant_velocity.get()) if not adaptive_velocity else None
+
 
         if name == "minimization":
             mpc = None
             model.qd = self.qd.get()
             model.qw = self.qw.get()
-        else:
+        elif name == "pseudostatic":
             model.set_cost_function(self.qd.get(), self.qw.get())
             model.setup()
             mpc = do_mpc.controller.MPC(model=model)

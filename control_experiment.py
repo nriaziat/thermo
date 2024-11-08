@@ -1,5 +1,4 @@
 import do_mpc.controller
-from cmapy import color
 from T3pro import T3pro
 from testbed import Testbed
 from AdaptiveID import *
@@ -36,41 +35,44 @@ v_min = 0.  # minimum velocity [mm/s]
 v_max = 10  # maximum velocity [mm/s]
 
 
-def update_adaptive_params(model, deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
-                           thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
-                           tip_displacement_mm: np.ndarray, w_mm: float, u0: float):
+def update_adaptive_params(model, defl_adaptation: DeflectionAdaptation, therm_adaptation: ThermalAdaptation,
+                           tip_mm: np.ndarray, w_mm: float, u0: float):
     """
     Update the adaptive parameters
     :param model: Model object
-    :param deflection_adaptation: Deflection adaptation object
-    :param thermal_adaptation: Thermal adaptation object
-    :param tip_displacement_mm: Tip displacement [mm]
+    :param defl_adaptation: Deflection adaptation object
+    :param therm_adaptation: Thermal adaptation object
+    :param tip_mm: Tip position mm [mm]
     :param w_mm: Width [mm]
     :param u0: Velocity [mm/s]
     """
     # deflection_adaptation.update(defl_mm, np.exp(-model.c_defl / u0))
-    deflection_adaptation.update(tip_displacement_mm, v=u0)
     dT = model.t_death - model.Ta
-    thermal_adaptation.update(w_mm, v=u0, dT=dT)
-    model.material.k = thermal_adaptation.k_w_mmK
-    model.material.rho = thermal_adaptation.rho
-    model.material.Cp = thermal_adaptation.Cp
-    model._b = deflection_adaptation.b
-    model._c_defl = deflection_adaptation.c_defl
+    if defl_adaptation.init:
+        if tip_mm is not None:
+            defl_adaptation.update(np.array([tip_mm[0], tip_mm[1]]), v=u0)
+        else:
+            defl_adaptation.update(None, v=u0)
+    therm_adaptation.update(np.array([w_mm]), dT=dT, v=u0)
+    model.material.k = therm_adaptation.k_w_mmK
+    model.material.rho = therm_adaptation.rho_kg_mm3
+    model.material.Cp = therm_adaptation.Cp
+    model._P = therm_adaptation.q
+    model._c_defl = defl_adaptation.c_defl
 
 
 def update(params: RunningParams, model,
            tip_candidates_px: list[np.ndarray],
-           deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
-           thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
+           defl_adaptation: DeflectionAdaptation,
+           therm_adaptation: ThermalAdaptation,
            u0: float, frame: np.ndarray, init_mpc: bool, mpc: Optional[do_mpc.controller.MPC]):
     """
     Update velocity and adaptive parameters
     :param params: Running parameters
     :param model: Model object
     :param tip_candidates_px: Tool tip resting position
-    :param deflection_adaptation: Deflection adaptation object
-    :param thermal_adaptation: Thermal adaptation object
+    :param defl_adaptation: Deflection adaptation object
+    :param therm_adaptation: Thermal adaptation object
     :param u0: Current velocity
     :param frame: Thermal frame
     :param init_mpc: MPC initialization flag
@@ -78,20 +80,23 @@ def update(params: RunningParams, model,
     :return: Updated velocity, deflection, width, MPC initialization flag
     """
     tip_px = find_tooltip(frame, 60)
-    tip_displacement_mm = np.array([0, 0])
     if tip_px is not None:
         tip_px = np.array(tip_px)
         if len(tip_candidates_px) < 10:
             tip_candidates_px.append(tip_px)
-        else:
+        elif not defl_adaptation.init:
             tip_neutral_px = np.median(tip_candidates_px, axis=0)
-            tip_displacement_mm = (tip_px - tip_neutral_px) / thermal_px_per_mm
+            defl_adaptation.kf.x[4:6] = tip_neutral_px / thermal_px_per_mm
+            defl_adaptation.kf.x[0:2] = tip_neutral_px / thermal_px_per_mm
+            defl_adaptation.init = True
+
+    tip_mm = np.array(tip_px) / thermal_px_per_mm if tip_px is not None else None
     tip_lead_distance = 0
     w_px, ellipse = cv_isotherm_width(frame, model.isotherm_temps[0])
     w_mm = w_px / thermal_px_per_mm
-    update_adaptive_params(model, deflection_adaptation, thermal_adaptation, tip_displacement_mm, w_mm, u0)
-    model.deflection_mm = deflection_adaptation.defl_mm
-    model.width_mm = thermal_adaptation.w_mm
+    update_adaptive_params(model, defl_adaptation, therm_adaptation, tip_mm, w_mm, u0)
+    model.deflection_mm = defl_adaptation.defl_mm
+    model.width_mm = therm_adaptation.w_mm
     if not init_mpc and params.mpc:
         mpc.x0['width_0'] = w_mm
         mpc.x0['tip_lead_dist'] = tip_lead_distance
@@ -101,9 +106,9 @@ def update(params: RunningParams, model,
         u0 = mpc.make_step(np.array([w_mm, tip_lead_distance])).item()
     else:
         u0 = model.find_optimal_velocity()
-    return u0, deflection_adaptation.defl_mm, w_mm, init_mpc, tip_candidates_px
+    return u0, defl_adaptation.defl_mm, therm_adaptation.w_mm, init_mpc, tip_candidates_px
 
-def setup_mpc(model, mpc, thermal_adaptation, deflection_adaptation, r):
+def setup_mpc(model, mpc, defl_adapt, therm_adapt, r):
     mpc.set_objective(mterm=model.aux['mterm'], lterm=model.aux['lterm'])
     mpc.set_rterm(u=r)
     mpc.bounds['lower', '_u', 'u'] = v_min
@@ -115,7 +120,7 @@ def setup_mpc(model, mpc, thermal_adaptation, deflection_adaptation, r):
     tvp_template = mpc.get_tvp_template()
 
     def tvp_fun(t_now):
-        tvp_template['_tvp'] = np.array([model.deflection_mm, deflection_adaptation.b, thermal_adaptation.b])
+        tvp_template['_tvp'] = np.array([model.deflection_mm, defl_adapt.b, therm_adapt.b])
         return tvp_template
 
     mpc.set_tvp_fun(tvp_fun)
@@ -144,14 +149,17 @@ def main(model,
 
     ## Initialize the parameter adaptation
     # thermal_adaptation = ScalarLinearAlgabraicAdaptation(b=model.material.alpha, gamma=0.01)
-    thermal_adaptation = ThermalAdaptation(np.array([0, model._P, model.material.k * 1e3, model.material.Cp]), labels=['w', 'P', 'k', 'Cp'])
+    thermal_adaptation = ThermalAdaptation(np.array([0, model._P, model.material.Cp]), labels=['w', 'P', 'Cp'])
     # deflection_adaptation = ScalarLinearAlgabraicAdaptation(b=0.1, gamma=0.5)
-    deflection_adaptation = DeflectionAdaptation(np.array([0, 0, 0, 0, 10, 0.5]), labels=['x', 'y', 'x_dot', 'y_dot', 'b', 'c_defl'])
+    deflection_adaptation = DeflectionAdaptation(np.array([0, 0, 0, 0, 0, 0, 1, 1]), labels=['x', 'y', 'x_dot', 'y_dot', 'x_rest', 'y_rest', 'c_defl', 'k'])
+    # adaptation = ComboAdaptation(np.array([0, 0, 0, 0, 0, 0, 5, 5, 0, model._P, model.material.Cp]),
+    #                              labels=['x', 'y', 'x_dot', 'y_dot', 'x_rest', 'y_rest', 'b', 'c_defl', 'w', 'q', 'Cp'])
+    deflection_adaptation.init = False
 
     #############################
 
     if params.mpc:
-        plotter = setup_mpc(model, mpc, thermal_adaptation, deflection_adaptation, r)
+        plotter = setup_mpc(model, mpc, deflection_adaptation, thermal_adaptation, r)
 
     else:
         plotter = GenericPlotter(n_plots=3,
@@ -161,21 +169,21 @@ def main(model,
                                            r'$\text{Velocities [mm/s]}$',
                                            r'$\delta \text{[mm]}$'])
     if params.plot_adaptive_params:
-        deflection_plotter = AdaptiveParameterPlotter(deflection_adaptation)
-        thermal_plotter = AdaptiveParameterPlotter(thermal_adaptation)
+        deflection_plotter = AdaptiveParameterPlotter(deflection_adaptation, plot_indices=[0, 0, 0, 0, 0, 0, 1, 1])
+        thermal_plotter = AdaptiveParameterPlotter(thermal_adaptation, plot_indices=[0, 1, 1])
     else:
         deflection_plotter = None
         thermal_plotter = None
 
 
     if params.exp_type == ExperimentType.PRERECORDED:
-        prerecorded_experiment(params, model, plotter, mpc, thermal_adaptation, deflection_adaptation, deflection_plotter, thermal_plotter)
+        prerecorded_experiment(params, model, plotter, mpc, deflection_adaptation, thermal_adaptation, deflection_plotter, thermal_plotter)
 
     elif params.exp_type == ExperimentType.SIMULATED:
-        simulated_experiment(params, model, plotter, mpc, thermal_adaptation, deflection_adaptation, deflection_plotter, thermal_plotter)
+        simulated_experiment(params, model, plotter, mpc, deflection_adaptation, thermal_adaptation, deflection_plotter, thermal_plotter)
 
     elif params.exp_type == ExperimentType.REAL:
-        real_experiment(params, model, tb, t3, plotter, mpc, thermal_adaptation, deflection_adaptation, deflection_plotter, thermal_plotter)
+        real_experiment(params, model, tb, t3, plotter, mpc, deflection_adaptation, thermal_adaptation, deflection_plotter, thermal_plotter)
 
     plt.show()
     if tb is not None:
@@ -210,12 +218,12 @@ def plot(params: RunningParams, plotter: GenericPlotter | MPCPlotter, w_mm: floa
 
 
 def real_experiment(params: RunningParams, model, tb, t3, plotter, mpc,
-                    thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
-                    deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
+                    defl_adaptation: DeflectionAdaptation,
+                    therm_adaptation: ThermalAdaptation,
                     deflection_plotter, thermal_plotter):
     u0 = (v_min + v_max) / 2
     data_log = pd.DataFrame(
-        columns=['widths_mm', 'velocities', 'deflections_mm', 'thermal_frames', 'damping_estimates', 'thermal_diffusivity_estimates'])
+        columns=['position_mm', 'widths_mm', 'velocities', 'deflections_mm', 'thermal_frames', 'deflection_estimates', 'thermal_estimates'])
     if params.home:
         tb.home()
 
@@ -228,8 +236,6 @@ def real_experiment(params: RunningParams, model, tb, t3, plotter, mpc,
     start_quit = messagebox.askyesno("Start Experiment?", message="Press yes to continue, or no to cancel.")
     if not start_quit:
         return
-    deflection_plotter.animate()
-    thermal_plotter.animate()
     tip_neutral_px = []
     while ret:
         ret, raw_frame = t3.read()
@@ -238,21 +244,28 @@ def real_experiment(params: RunningParams, model, tb, t3, plotter, mpc,
         color_frame = thermal_frame_to_color(thermal_arr)
 
 
-        u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(params, model, tip_neutral_px, deflection_adaptation, thermal_adaptation, u0, thermal_arr, init_mpc, mpc)
-        color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, tip_neutral_px + (deflection_adaptation.ukf.x[:2] * thermal_px_per_mm))
+        u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(params, model, tip_neutral_px, defl_adaptation, therm_adaptation, u0, thermal_arr, init_mpc, mpc)
+        new_tip_pos = defl_adaptation.kf.x[:2] * thermal_px_per_mm
+        neutral_tip_pos = defl_adaptation.neutral_tip_mm * thermal_px_per_mm
+        color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos,  neutral_tip_pos)
         cv.imshow("Frame", color_frame)
-        if not plot(params, plotter,w_mm, defl_mm, u0, deflection_plotter, thermal_plotter):
-            break
         if not params.adaptive_velocity:
             u0 = params.constant_velocity
-        if defl_mm > 2.5:
-            u0 = np.clip(u0 - v_max / 2.5 * defl_mm, -v_max, v_max)
+        if not plot(params, plotter, w_mm, defl_mm, u0, deflection_plotter, thermal_plotter):
+            break
+        # if defl_mm > 5:
+        #     u0 = np.clip(u0 - v_max / 5 * defl_mm, -v_max, v_max)
+        if defl_mm > 10:
+            messagebox.showerror("Error", "Deflection too high, stopping the experiment")
+            break
 
         tb.set_speed(u0)
-        data_log.loc[len(data_log)] = [w_mm, u0,
+        pos = tb.get_position()
+        data_log.loc[len(data_log)] = [pos, w_mm, u0,
                                        defl_mm,
-                                       thermal_arr, deflection_adaptation.b, thermal_adaptation.alpha]
-        if cv.waitKey(1) & 0xFF == ord('q'):
+                                       thermal_arr, {'c_defl': defl_adaptation.c_defl},
+                                       {'q': therm_adaptation.q, 'Cp': therm_adaptation.Cp}]
+        if cv.waitKey(1) & 0xFF == ord('q') or pos == -1:
             break
 
     tb.set_speed(0)
@@ -263,8 +276,8 @@ def real_experiment(params: RunningParams, model, tb, t3, plotter, mpc,
         data_log.to_pickle(fname)
 
 def simulated_experiment(params: RunningParams, model, plotter, mpc,
-                         thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
                          deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
+                         thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
                          deflection_plotter, thermal_plotter):
     simulator = do_mpc.simulator.Simulator(model)
     simulator.set_param(t_step=1 / 24, integration_tool='idas')
@@ -302,8 +315,8 @@ def simulated_experiment(params: RunningParams, model, plotter, mpc,
         plt.pause(0.0001)
 
 def prerecorded_experiment(params: RunningParams, model, plotter, mpc,
-                           thermal_adaptation: ScalarLinearAlgabraicAdaptation | ThermalAdaptation,
-                           deflection_adaptation: ScalarLinearAlgabraicAdaptation | DeflectionAdaptation,
+                           defl_adaptation: DeflectionAdaptation,
+                           therm_adaptation: ThermalAdaptation,
                            deflection_plotter, thermal_plotter):
 
     with open(params.log_file_to_load, 'rb') as f:
@@ -314,17 +327,20 @@ def prerecorded_experiment(params: RunningParams, model, plotter, mpc,
         vs = data.velocities
     else:
         thermal_frames = data['thermal_frames']
-        bs = data['damping_estimates']
+        try:
+            bs = data['damping_estimates']
+        except KeyError:
+            bs = data['deflection_estimates']
         vs = data['velocities']
     u0 = (v_min + v_max) / 2
     init_mpc = False
     tip_neutral_px = []
     for i, (frame, b, v) in enumerate(zip(tqdm.tqdm(thermal_frames), bs, vs)):
         color_frame = thermal_frame_to_color(frame)
-        u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(params, model, tip_neutral_px, deflection_adaptation, thermal_adaptation, v,
+        u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(params, model, tip_neutral_px, defl_adaptation, therm_adaptation, v,
                                              frame, init_mpc, mpc)
-        new_tip_pos = np.median(tip_neutral_px, axis=0) + (deflection_adaptation.ukf.x[:2] * thermal_px_per_mm) if len(tip_neutral_px) > 0 else None
-        color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos[::-1] if new_tip_pos is not None else None)
+        new_tip_pos = defl_adaptation.kf.x[:2] * thermal_px_per_mm
+        color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos, defl_adaptation.neutral_tip_mm * thermal_px_per_mm)
         cv.imshow("Frame", color_frame)
         if not plot(params, plotter, w_mm, defl_mm, u0, deflection_plotter, thermal_plotter):
             break

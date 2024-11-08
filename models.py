@@ -16,9 +16,9 @@ class MaterialProperties:
     k: conductivity [W/mmK]
     alpha: thermal diffusivity [mm^2/s]
     """
-    rho: float
-    Cp: float
-    k: float
+    _rho: float
+    _Cp: float
+    _k: float
     _alpha: float = None
     @property
     def alpha(self):
@@ -33,32 +33,69 @@ class MaterialProperties:
         else:
             self._alpha = value
 
+    @property
+    def rho(self):
+        return self._rho
+
+    @property
+    def Cp(self):
+        return self._Cp
+
+    @property
+    def k(self):
+        return self._k
+
+    @rho.setter
+    def rho(self, value):
+        if value < 0:
+            self._rho = 1e-9
+        else:
+            self._rho = value
+
+    @Cp.setter
+    def Cp(self, value):
+        if value < 0:
+            self._Cp = 1e-9
+        else:
+            self._Cp = value
+
+    @k.setter
+    def k(self, value):
+        if value < 0:
+            self._k = 0
+        else:
+            self._k = value
+
+
 exp_gamma = np.exp(0.5772)
 @lru_cache
 def F(Tc):
-    if (Ro := 1/Tc) > 0.3856:
+    if Tc < 1/0.3856:
         return np.exp(-Tc) * (1 + (1.477 * Tc) ** 1.407) ** 0.7107
     return (1 + (1.477 * Tc) ** -1.407) ** 0.7107
 
 # @lru_cache
 def ymax(u, material, q, dT):
-    Ro = 1/Tc(dT, material, q)
-    if Ro > 0.3856:
-        return 1/np.sqrt(2*np.pi*np.exp(1)) * q * material.alpha / (u * 25* material.k * dT) * F(Tc(dT, material, q))
-    return 4 * material.alpha / (u * exp_gamma) * F(Tc(dT, material, q))
+    d = 25 # tissue thickness [mm]
+    T_star = Tc(dT, material, q, d)
+    if T_star < 1/0.3856:
+        return 1/np.sqrt(2*np.pi*np.exp(1)) * q * material.alpha / (u * d * material.k * dT) * F(T_star)
+    return 4 * material.alpha / (u * exp_gamma) * F(T_star)
 
-def Tc(dT: float, material: MaterialProperties, P: float):
+def Tc(dT: float, material: MaterialProperties, P: float, d: float):
     """
     Calculate the dimensionless temperature.
     :param dT: Temperature difference [K]
     :param material: Material properties
     :param P: Power [W]
+    :param d: tissue thickness [mm]
+    :return: dimensionless temperature
     """
-    d = 25
     return 2 * np.pi * material.k * d * dT / P
 
-humanTissue = MaterialProperties(rho=1090e-9, Cp=3421, k=0.46e-3)
-hydrogelPhantom = MaterialProperties(rho=1310e-9, Cp=3140, k=0.6e-3)
+humanTissue = MaterialProperties(_rho=1090e-9, _Cp=3421, _k=0.46e-3)
+
+hydrogelPhantom = MaterialProperties(_rho=1310e-9, _Cp=3140, _k=0.6e-3)
 
 # class ToolTipKF(KalmanFilter):
 #     def __init__(self, damping_ratio, pos=None):
@@ -143,7 +180,7 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
         self._isotherm_measurement_mm = 0
         self._deflection_measurement_mm = 0
         self._b = 0.5
-        self._P = 45
+        self._P = 40
         self._u0 = (vlim[0] + vlim[1]) / 2
         self.r = r  # input penalty
         self.qw = qw
@@ -156,7 +193,9 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
         return ymax(v, self.material, self._P, self.t_death - self.Ta)
 
     def deflection_model(self, v: float) -> float:
-        return self._b * np.exp(-self._c_defl / v)
+        if self._c_defl < 0:
+            self._c_defl = 0
+        return self._c_defl * np.exp(-self.deflection_mm / v)
 
     def find_optimal_velocity(self):
         res = minimize_scalar(self.cost_function, bounds=[self._vmin, self._vmax], method='bounded')
@@ -169,7 +208,7 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
 
     @property
     def deflection_mm(self) -> float:
-        return self.deflection_model(self._P)
+        return self._deflection_measurement_mm
 
     @deflection_mm.setter
     def deflection_mm(self, value: float):

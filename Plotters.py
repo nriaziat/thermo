@@ -3,9 +3,11 @@ from matplotlib import rcParams
 import do_mpc
 
 class AdaptiveParameterPlotter:
-    def __init__(self, adaptive_model):
+    def __init__(self, adaptive_model, plot_indices: list[bool| int]):
         self._adaptive_model = adaptive_model
-        self.n = len(adaptive_model.labels)
+        self._plot_indices = plot_indices
+        assert len(plot_indices) == len(adaptive_model.labels)
+        self.n = sum([1 for i in plot_indices if i])
         if self.n == 1:
             self.fig, self.axs = plt.subplots(1, figsize=(16, 9), sharex=True)
             self.lines = []
@@ -17,7 +19,8 @@ class AdaptiveParameterPlotter:
             self.fig, self.axs = plt.subplots(self.n, figsize=(16, 9), sharex=True)
             self.lines = []
             self.cis = []
-            for i, (ax, label) in enumerate(zip(self.axs, adaptive_model.labels)):
+            self._labels = [label for i, label in enumerate(adaptive_model.labels) if plot_indices[i]]
+            for i, (ax, label) in enumerate(zip(self.axs, self._labels)):
                 line, = self.axs[i].plot([], [], label=label)
                 self.lines.append(line)
                 self.axs[i].set_ylabel(label)
@@ -29,20 +32,14 @@ class AdaptiveParameterPlotter:
             f.remove()
         self.fills = []
         if self.n == 1:
-            low_ci = [x[0] for x in self._adaptive_model.data[self._adaptive_model.labels[0]]]
-            high_ci = [x[2] for x in self._adaptive_model.data[self._adaptive_model.labels[0]]]
             y = [x[1] for x in self._adaptive_model.data[self._adaptive_model.labels[0]]]
             self.lines[0].set_data(range(len(self._adaptive_model.data[self._adaptive_model.labels[0]])), y)
-            self.fills.append(self.axs[0].fill_between(range(len(self._adaptive_model.data[self._adaptive_model.labels[0]])), low_ci, high_ci, alpha=0.5, color='blue'))
             self.axs.relim()
             self.axs.autoscale_view()
         else:
-            for i, label in enumerate(self._adaptive_model.labels):
-                low_ci = [x[0] for x in self._adaptive_model.data[label]]
-                high_ci = [x[2] for x in self._adaptive_model.data[label]]
+            for i, label in enumerate(self._labels):
                 y = [x[1] for x in self._adaptive_model.data[label]]
                 self.lines[i].set_data(range(len(self._adaptive_model.data[label])), y)
-                self.fills.append(self.axs[i].fill_between(range(len(self._adaptive_model.data[label])), low_ci, high_ci, alpha=0.5, color='blue'))
                 self.axs[i].relim()
                 self.axs[i].autoscale_view()
         self.fig.canvas.draw()

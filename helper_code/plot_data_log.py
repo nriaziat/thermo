@@ -1,19 +1,11 @@
 import pickle as pkl
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.optimize
-from numpy.core.numeric import argwhere
-from scipy.optimize import curve_fit
-from sympy.physics.control.control_plots import matplotlib
-from utils import LoggingData, find_wavefront_distance, cv_isotherm_width, find_tooltip, thermal_frame_to_color, \
-    exp_gamma
+from utils import LoggingData, find_wavefront_distance, cv_isotherm_width, find_tooltip
 from os import PathLike, listdir
-from VelocityOptimization import AdaptiveMPC
 from matplotlib import rcParams
+from scipy.stats import ttest_rel
 import pandas as pd
-from scipy.stats import pearsonr
-from scipy.special import k0
 
 rcParams['text.usetex'] = True
 rcParams["font.family"] = "Times New Roman"
@@ -31,9 +23,6 @@ thermal_px_per_mm = 5.1337 # px/mm
 
 plt.ioff()
 
-def cost_fun(w, d):
-    return AdaptiveMPC.qw * w**2 + AdaptiveMPC.qd * d**2
-
 
 def plot_data_log(file: str | PathLike, main_ax: list[plt.Axes], param_ax: list[plt.Axes], use_position=False):
     exp_type = file.split("/")[-1].split("_")[1].lower()
@@ -50,6 +39,8 @@ def plot_data_log(file: str | PathLike, main_ax: list[plt.Axes], param_ax: list[
     if hasattr(data, "positions_mm"):
         position = np.array(data.positions_mm)
         position[0] = 0
+    elif isinstance(data, pd.DataFrame):
+        position = np.cumsum(np.array(data.velocities) * 1 / 24)
     elif hasattr(data, "positions"):
         convert_old_data_log(file)
         with open(file, "rb") as f:
@@ -67,8 +58,6 @@ def plot_data_log(file: str | PathLike, main_ax: list[plt.Axes], param_ax: list[
     data.deflections_mm = data.deflections_mm[:len(position)]
     print(f"Mean DEFLECTION: {np.mean(data.deflections_mm):.2f} mm")
     print(f"Max DEFLECTION: {np.max(data.deflections_mm):.2f} mm")
-    cost = [cost_fun(w, d) for w, d in zip(data.widths_mm, data.deflections_mm)]
-    cost[-1] += cost_fun(data.widths_mm[-1], 0)
     if use_position:
         x = position
     else:
@@ -76,12 +65,9 @@ def plot_data_log(file: str | PathLike, main_ax: list[plt.Axes], param_ax: list[
     main_ax[0].plot(x, data.velocities, color)
     main_ax[1].plot(x, data.widths_mm, color)
     main_ax[2].plot(x, data.deflections_mm, color)
-    if len(main_ax) == 4:
-        main_ax[3].plot(x, np.cumsum(cost), color)
 
-    param_ax[0].plot(x, data.a_hats, color)
-    param_ax[1].plot(x, data.alpha_hats, color)
-    param_ax[2].plot(x, data.damping_estimates, color)
+    param_ax[0].plot(x, data.thermal_diffusivity_estimates, color)
+    param_ax[1].plot(x, data.damping_estimates)
 
     return min_dist, "DECAF" if "adaptive" in exp_type else "Constant Velocity"
 
@@ -96,7 +82,7 @@ def plot_log_dir(file_dir: str | PathLike = None, list_of_files: list[str | Path
         fig, axs = plt.subplots(4, 1)
     else:
         fig, axs = plt.subplots(3, 1)
-    param_fig, param_axs = plt.subplots(3, 1)
+    param_fig, param_axs = plt.subplots(2, 1)
 
     exp_types = []
     if file_dir is not None:
@@ -138,9 +124,8 @@ def plot_log_dir(file_dir: str | PathLike = None, list_of_files: list[str | Path
         axs[-1].set_xlabel("Time Step")
         param_axs[-1].set_xlabel("Time Step")
 
-    param_axs[0].set_ylabel(r"$\hat{a}$")
-    param_axs[1].set_ylabel(r"$\hat{\alpha}$")
-    param_axs[2].set_ylabel(r"$\hat{d}$")
+    param_axs[0].set_ylabel(r"$\hat{\alpha}$")
+    param_axs[1].set_ylabel(r"$\hat{c}$")
     axs[0].legend(exp_types)
     param_axs[0].legend(exp_types)
     fig.suptitle(f"Experiment Data")
@@ -237,32 +222,43 @@ def wavefront_dist_vs_deflection(file: str | PathLike):
     return list(wavefront_dists), defls
 
 use_position = True
-# fnames = ["../logs/data_7.0mm-s_2024-09-17-14:18.pkl",
-#                             "../logs/data_7.0mm-s_2024-09-17-14:20.pkl",
-#                             "../logs/data_7.0mm-s_2024-09-17-14:21.pkl",
-#                             "../logs/data_7.0mm-s_2024-09-17-14:22.pkl",
-#                             "../logs/data_7.0mm-s_2024-09-17-14:23.pkl"]
+dir = "../logs/"
+fnames = ["data_adaptive_2024-10-29-16:29.pkl", "data_adaptive_2024-10-29-16:27.pkl", "data_adaptive_2024-10-29-16:21.pkl", "data_adaptive_2024-10-29-16:17.pkl",
+          "data_adaptive_2024-10-29-16:15.pkl", "data_7mm_s_2024-10-29-16:40.pkl", "data_7mm_s_2024-10-29-16:41.pkl",
+    "data_7mm_s_2024-10-29-16:42.pkl",
+    "data_7mm_s_2024-10-29-16:43.pkl",
+    "data_7mm_s_2024-10-29-16:44.pkl"]
+fnames = ["data_adaptive_2024-10-31-14:40.pkl"]
+ax = None
+summary = pd.DataFrame(columns=["widths_mm", "deflections_mm", "exp_type"])
+for file in fnames:
+    with open(dir + file, "rb") as f:
+        df: pd.DataFrame = pkl.load(f)
+    thermal_params = df["thermal_estimates"][0].keys()
+    for param in thermal_params:
+        df[param] = df["thermal_estimates"].apply(lambda x: x[param])
+    deflection_params = df["deflection_estimates"][0].keys()
+    for param in deflection_params:
+        df[param] = df["deflection_estimates"].apply(lambda x: x[param])
+    df.plot(subplots=True)
+    # df["position_mm"] = np.cumsum(df["velocities"] * 1 / 24)
+    # df.drop(columns=["thermal_frames"], inplace=True)
+    summary.loc[-1] = [df["widths_mm"].mean(), df["deflections_mm"].mean(), "adaptive" if "adaptive" in file else "constant"]
+    summary.index = summary.index + 1
+
+# summary.set_index("exp_type", inplace=True)
+
+summary.plot(subplots=True, ax=ax, kind='box', by="exp_type", column=["widths_mm", "deflections_mm"])
+plt.show()
+
+width_pval = ttest_rel(summary[summary["exp_type"] == "adaptive"]["widths_mm"], summary[summary["exp_type"] == "constant"]["widths_mm"]).pvalue
+defl_pval = ttest_rel(summary[summary["exp_type"] == "adaptive"]["deflections_mm"], summary[summary["exp_type"] == "constant"]["deflections_mm"]).pvalue
+print(f"Width p-value: {width_pval:.2e}")
+print(f"Deflection p-value: {defl_pval:.2e}")
+
 # plot_log_dir(list_of_files=fnames,
 #                 plot_cost=False)
 # summarize_data_logs(list_of_const_vel=fnames)
-dists = []
-defls = []
+# dists = []
+# defls = []
 
-for file in listdir("../logs"):
-    if file.endswith(".pkl") and file.find("data") != -1 and file.find("adaptive") != -1:
-        dist, defl = wavefront_dist_vs_deflection(f"../logs/{file}")
-        if len(dist) == 0:
-            continue
-        dists += dist
-        defls += defl
-
-
-wavefront_dists = np.array(dists)
-defls = np.array(defls)
-
-pearson = pearsonr(wavefront_dists, defls)
-print(f"Pearson Correlation: {pearson[0]:.2f}")
-print(f"Pearson p-value: {pearson[1]:.2e}")
-print(f"Slope Confidence Interval: {pearson.confidence_interval(confidence_level=0.95)}")
-plt.scatter(wavefront_dists, defls)
-plt.show()

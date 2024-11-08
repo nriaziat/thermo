@@ -1,4 +1,4 @@
-from filterpy.kalman import UnscentedKalmanFilter, MerweScaledSigmaPoints
+from filterpy.kalman import UnscentedKalmanFilter, MerweScaledSigmaPoints, ExtendedKalmanFilter
 from SquareRootUnscentedKalmanFilter import SquareRootUnscentedKalmanFilterParameterEstimation, SquareRootUnscentedKalmanFilter, SquareRootMerweScaledSigmaPoints
 from filterpy.common import Q_discrete_white_noise
 import numpy as np
@@ -102,9 +102,8 @@ class BoundedMerweScaledSigmaPoints(MerweScaledSigmaPoints):
     def sqrt(self, x):
         try:
             result = scipy.linalg.cholesky(x)
-        except np.linalg.LinAlgError:
-            x = (x + x.T) / 2 + np.eye(x.shape[0]) * 1e-6
-            result = scipy.linalg.cholesky(x)
+        except np.linalg.LinAlgError as e:
+            raise ValueError("Cholesky decomposition failed. x={}".format(x)) from e
         return result
 
 
@@ -142,11 +141,56 @@ class BoundedMerweScaledSigmaPoints(MerweScaledSigmaPoints):
 
         return sigmas
 
+class BoundedSquareRootMerweScaledSigmaPoints(SquareRootMerweScaledSigmaPoints):
+    def __init__(self, n, alpha, beta, kappa, low:float | np.ndarray=0, high:float | np.ndarray=np.inf):
+        super().__init__(n, alpha, beta, kappa)
+        if np.isscalar(low):
+            low = np.array([low]*n)
+        if np.isscalar(high):
+            high = np.array([high]*n)
+        assert n == len(low) == len(high), "n must be the same length as low and high"
+        self.low = low
+        self.high = high
+        self._epsilon = 1e-3
+
+    def sigma_points(self, x, sqrt_P):
+        """
+        Computes the sigma points for an unscented Kalman filter
+        using the formulation of Wan and van der Merwe. This method
+        is less efficient than the simple method, but is more stable
+        for near-linear systems.
+        """
+        if self.n != np.size(x):
+            raise ValueError("expected size(x) {}, but size is {}".format(
+                self.n, np.size(x)))
+
+        n = self.n
+
+        if np.isscalar(x):
+            x = np.asarray([x])
+
+        if  np.isscalar(sqrt_P):
+            sqrt_P = np.eye(n)*sqrt_P
+        else:
+            sqrt_P = np.atleast_2d(sqrt_P)
+
+        lambda_ = self.alpha**2 * (n + self.kappa) - n
+        U = self.sqrt(lambda_ + n)* sqrt_P
+        sigmas = np.zeros((2*n+1, n))
+        # sigmas[0] = x
+        sigmas[0] = np.minimum(self.high - self._epsilon, np.maximum(self.low + self._epsilon, x))
+        for k in range(n):
+            # pylint: disable=bad-whitespace
+            sigmas[k+1]   = np.minimum(self.high-self._epsilon, np.maximum(self.subtract(x, -U[k]), self.low+self._epsilon))
+            sigmas[n+k+1] = np.minimum(self.high-self._epsilon, np.maximum(self.subtract(x, U[k]), self.low+self._epsilon))
+
+        return sigmas
+
 
 
 class UKFIdentification(ABC):
-    def __init__(self, w0: np.array, dim_z: int, labels: list[str], lower_bounds: np.ndarray = -np.inf,
-                 upper_bounds: np.ndarray = np.inf):
+    def __init__(self, w0: np.array, dim_z: int, labels: list[str], lower_bounds: np.ndarray | float = -np.inf,
+                 upper_bounds: np.ndarray | float = np.inf):
         """
         :param w0: Initial parameter estimate
         """
@@ -161,14 +205,30 @@ class UKFIdentification(ABC):
                                              low=lower_bounds,
                                              high=upper_bounds)
 
+        # self.points = BoundedSquareRootMerweScaledSigmaPoints(n=n,
+        #                                         alpha=1e-3,
+        #                                         beta=2,
+        #                                         kappa=0,
+        #                                         low=lower_bounds,
+        #                                         high=upper_bounds)
 
-        self.ukf = UnscentedKalmanFilter(dim_x=n,
-                                         dim_z=dim_z,
-                                         dt=1/24,
-                                         hx=self.hx,
-                                         fx=self.fx,
-                                         points=self.points)
-        self.ukf.x = w0
+
+
+        self.kf = UnscentedKalmanFilter(dim_x=n,
+                                        dim_z=dim_z,
+                                        dt=1/24,
+                                        hx=self.hx,
+                                        fx=self.fx,
+                                        points=self.points)
+
+        # self.ukf = SquareRootUnscentedKalmanFilter(dim_x=n,
+        #                                     dim_z=dim_z,
+        #                                     dt=1/24,
+        #                                     hx=self.hx,
+        #                                     fx=self.fx,
+        #                                     points=self.points)
+
+        self.kf.x = w0
         self._data = {label: [(w0[i], w0[i], w0[i])] for i, label in enumerate(self.labels)}
 
     @property
@@ -199,11 +259,80 @@ class UKFIdentification(ABC):
         :param kwargs: Additional keyword arguments to pass to the measurement function
         :return: Tuple of updated state estimate, a, b
         """
-        self.ukf.predict(**kwargs)
-        self.ukf.update(measurement, **kwargs)
-        ci_low, ci_high = self.ukf.x - np.sqrt(np.diag(self.ukf.P)), self.ukf.x + 3 * np.sqrt(np.diag(self.ukf.P))
-        self._data = {label: self._data[label] + [(ci_low[i], self.ukf.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
-        return self.ukf.x
+        self.kf.predict(**kwargs)
+        # self.ukf.P[6:8, 6:8] /= 0.99999
+        # self.ukf.P[9:11, 9:11] /= 0.99999 # forgettting factor
+        self.kf.update(measurement, **kwargs)
+        if isinstance(self.kf, SquareRootUnscentedKalmanFilterParameterEstimation):
+            ci_low, ci_high = self.kf.x - np.diag(self.kf.sqrt_P), self.kf.x + np.diag(self.kf.sqrt_P)
+        else:
+            ci_low, ci_high = self.kf.x - np.sqrt(np.diag(self.kf.P)), self.kf.x + np.sqrt(np.diag(self.kf.P))
+        self._data = {label: self._data[label] + [(ci_low[i], self.kf.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
+        return self.kf.x
+
+    @property
+    def data(self) -> dict[str, list[tuple]]:
+        """
+        Dictionary of parameter labels and values (with confidence intervals) [label: [(value, low_ci, high_ci)]]
+        """
+        return self._data
+
+class EKFIdentification(ABC):
+    def __init__(self, w0: np.array, dim_z: int, labels: list[str], lower_bounds: np.ndarray = -np.inf,
+                 upper_bounds: np.ndarray = np.inf):
+        """
+        :param w0: Initial parameter estimate
+        """
+        n = len(w0)
+        assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
+        self._labels = labels
+
+        self.kf = ExtendedKalmanFilter(dim_x=n,
+                                       dim_z=dim_z)
+        self.kf.x = w0
+        self._data = {label: [(w0[i], w0[i], w0[i])] for i, label in enumerate(self.labels)}
+
+    @property
+    def labels(self) -> list[str]:
+        """
+        List of parameter labels
+        """
+        return self._labels
+
+    @abstractmethod
+    def hx(self, x, **kwargs) -> np.array:
+        """
+        Measurement function
+        """
+        pass
+
+    @abstractmethod
+    def HJacobian(self, x, **kwargs) -> np.array:
+        """
+        Jacobian of the measurement function
+        """
+        pass
+
+    @abstractmethod
+    def fx(self, x, dt) -> np.array:
+        """
+        State transition function
+        """
+        pass
+
+    def update(self, measurement, **kwargs) -> tuple:
+        """
+        Update the adaptive parameters
+        :param measurement: Measurement
+        :param kwargs: Additional keyword arguments to pass to the measurement function
+        :return: Tuple of updated state estimate, a, b
+        """
+        u = kwargs.get("v")
+        self.kf.predict_x(u=u)
+        self.kf.update(measurement, HJacobian=self.HJacobian, Hx=self.hx)
+        ci_low, ci_high = self.kf.x - np.sqrt(np.diag(self.kf.P)), self.kf.x + np.sqrt(np.diag(self.kf.P))
+        self._data = {label: self._data[label] + [(ci_low[i], self.kf.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
+        return self.kf.x
 
     @property
     def data(self) -> dict[str, list[tuple]]:
@@ -216,30 +345,35 @@ class UKFIdentification(ABC):
 class DeflectionAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
         """
-        :param w0: Initial parameter estimate [x, y, xd, yd, b, c_defl]
+        :param w0: Initial parameter estimate [x, y, xd, yd, x_rest, y_rest, c_defl, k_tool] in mm, mm/s, mm, mm, mm, mm, N/mm, N/mm
         """
-        super().__init__(w0, dim_z=2, labels=labels, lower_bounds=np.array([-np.inf, -np.inf, -np.inf, -np.inf, 0, 0]))
+        super().__init__(w0, dim_z=4, labels=labels, lower_bounds=np.array([-np.inf, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf, 0, 0]))
         assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
-        self.ukf.P = np.diag([1, 1, 1, 1, 1, 1])
-        self.ukf.R = 1 * np.eye(2)
-        self.ukf.Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=0.1**2, block_size=2), np.zeros((2, 3))],
-                                 [np.zeros((2, 4)), np.diag([1, 1])]])
-
-    @property
-    def b(self):
-        return self.ukf.x[5]
+        self.kf.P = np.diag([1**2, 4**2, 1, 1, 1**2, 2**2, 1, 1])
+        self.kf.R = np.diag([0.25**2, 0.5**2])
+        if isinstance(self.kf, SquareRootUnscentedKalmanFilterParameterEstimation):
+            self.kf.sqrt_Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=1, block_size=2), np.zeros((4, 3))],
+                                       [np.zeros((3, 4)), np.diag([1, 1, 1])]])
+        else:
+            self.kf.Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=3, block_size=2), np.zeros((4, 4))],
+                                   [np.zeros((4, 4)), np.diag([0.001**2, 0.001**2, 0.1**2, 0.1**2])]])
+        self.kf.predict_x = lambda u: self.fx(self.kf.x, 1/24, v=u)
 
     @property
     def c_defl(self):
-        return self.ukf.x[6]
+        return self.kf.x[6]
 
     @property
-    def k(self):
-        return 1.3
+    def k_tool(self):
+        return 1
 
     @property
     def defl_mm(self):
-        return np.linalg.norm(self.ukf.x[0:2])
+        return np.linalg.norm(self.kf.x[0:2] - self.kf.x[4:6])
+
+    @property
+    def neutral_tip_mm(self):
+        return self.kf.x[4:6]
 
     def hx(self, x, **kwargs):
         """
@@ -249,53 +383,67 @@ class DeflectionAdaptation(UKFIdentification):
         # return np.array([x[0] * np.exp(-x[1] / v)])
         return np.array([x[0], x[1]])
 
+    def HJacobian(self, x, **kwargs):
+        """
+        Jacobian of the measurement function
+        """
+        return np.array([[1, 0, 0, 0, 0, 0, 0],
+                            [0, 1, 0, 0, 0, 0, 0]])
+
     def fx(self, x, dt, **kwargs):
         """
         State transition function
         """
         v = kwargs.get("v")
+        # x[6:] = np.maximum(0, x[6:])
         x[0] += x[2] * dt
         x[1] += x[3] * dt
-        v_tool = np.sqrt(x[2] ** 2 + x[3] ** 2) * -np.sign(x[2])
-        if 0 < v_tool < v:
-            F = x[5] * np.exp(-x[6] / (v - v_tool + 1e-6)) + x[4] * np.linalg.norm(x[0:2])
-        else:
-            F = x[5] * np.exp(-x[6] / (v + 1e-6))  + self.k * np.linalg.norm(x[0:2])
-        x[0:2] -= F * np.array([x[0], x[1]]) * dt
+        v_net = v * np.array([1, 0]) - x[2:4]
+        v_hat = v_net / np.linalg.norm(v_net)
+        F = - x[7] * (x[0:2] - x[4:6]) - x[6] * np.exp(-np.linalg.norm(x[0:2] - x[4:6]) / np.linalg.norm(v_net)) * np.array([1, 0]) - 1 * x[2:4]
+        x[2:4] += F * dt
         return x
 
 class ThermalAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
         """
-        :param w0: Initial parameter estimate  [w, q, k, Cp] in mm, W, W/mK, J/kgK
+        :param w0: Initial parameter estimate  [w, q, Cp] in mm, W, J/kgK
         """
-        super().__init__(w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0, 0, 0]))
-        self.ukf.P = np.diag([0, 5, 0.1**2, 100**2])
-        self.ukf.R = 1
-        self.ukf.Q = np.diag([1, 1, 0.1**2, 50**2])
+        super().__init__(w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0, 0]))
+        self.kf.P = np.diag([1, 5, 100 ** 2])
+        self.kf.R = 0.5 ** 2
+        if isinstance(self.kf, SquareRootUnscentedKalmanFilterParameterEstimation):
+            self.kf.sqrt_Q = np.diag([4, 5, 100])
+        else:
+            self.kf.Q = np.diag([1, 9, 50 ** 2])
         # self.Cp = 3421
         self.rho = 1090  # kg/m^3
         # self.k = 0.46e-3
 
     @property
+    def rho_kg_mm3(self):
+        return self.rho * 1e-9
+
+    @property
     def k_w_mmK(self):
-        return self.ukf.x[2] * 1e-3
+        return 0.46e-3
+        # return self.ukf.x[2] * 1e-3 if self.ukf.x[2] > 0 else 0
 
     @property
     def q(self):
-        return self.ukf.x[1]
+        return self.kf.x[1]
 
     @property
     def Cp(self):
-        return self.ukf.x[3]
+        return self.kf.x[2]
 
     @property
     def alpha(self):
-        return self.ukf.x[2] / (self.rho * self.Cp)
+        return self.k_w_mmK / (self.rho_kg_mm3 * self.kf.x[2])
 
     @property
     def w_mm(self):
-        return self.ukf.x[0]
+        return self.kf.x[0]
 
     def hx(self, x, **kwargs):
         """
@@ -309,11 +457,15 @@ class ThermalAdaptation(UKFIdentification):
         """
         v = kwargs.get("v")
         dT = kwargs.get("dT")
-        material = MaterialProperties(k=self.k_w_mmK, rho=self.rho*1e-9, Cp=self.Cp)
-        y = ymax(v, material, x[1], dT)
-        if (Ro:= 1/Tc(v, material, x[1])) < 0.3:
-            print(f"Regime IV, Ro = {Ro:.2f}")
-        if np.isinf(y) or np.isnan(y):
-            return self.ukf.x
+        k = self.k_w_mmK
+        Cp = x[2]
+        q = x[1]
+        if q <= 0:
+            y = 0
+        else:
+            material = MaterialProperties(_k=k, _rho=self.rho*1e-9, _Cp=Cp)
+            y = ymax(v, material, q, dT)
+            if np.isinf(y) or np.isnan(y):
+                return self.kf.x
         x[0] = y
         return x
