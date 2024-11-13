@@ -67,9 +67,12 @@ class GenericPlotter:
             ax.legend()
         self.axs[-1].set_xlabel(x_label)
 
-    def plot(self, y: list[float]):
+    def plot(self, y: list[float], defl_hist=None):
         for i, label in enumerate(self._data.keys()):
-            self._data[label].append(y[i])
+            if label == 'Deflection' and defl_hist is not None:
+                self._data[label] = defl_hist
+            else:
+                self._data[label].append(y[i])
             self.lines[i].set_data(range(len(self._data[label])), self._data[label])
             self.axs[i].relim()
             self.axs[i].autoscale_view()

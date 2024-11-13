@@ -127,7 +127,7 @@ class ControlExperimentUI(TKMT.ThemedTKinterFrame):
         material = humanTissue if self.material_name.get() == "human" else hydrogelPhantom
 
         if (name := self.model_name.get()) == "minimization":
-            model = SteadyStateMinimizationModel(material)
+            model = SteadyStateMinimizationModel(material, vlim=(0, 15))
             adaptive_velocity = True
         elif name == "pseudostatic":
             model = PseudoStaticModel(material)

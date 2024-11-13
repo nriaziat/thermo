@@ -1,10 +1,11 @@
+import os
 import pickle as pkl
 import matplotlib.pyplot as plt
 import numpy as np
 from utils import LoggingData, find_wavefront_distance, cv_isotherm_width, find_tooltip
 from os import PathLike, listdir
 from matplotlib import rcParams
-from scipy.stats import ttest_rel
+from scipy.stats import ttest_rel, ranksums
 import pandas as pd
 
 rcParams['text.usetex'] = True
@@ -222,15 +223,13 @@ def wavefront_dist_vs_deflection(file: str | PathLike):
     return list(wavefront_dists), defls
 
 use_position = True
-dir = "../logs/"
-fnames = ["data_adaptive_2024-10-29-16:29.pkl", "data_adaptive_2024-10-29-16:27.pkl", "data_adaptive_2024-10-29-16:21.pkl", "data_adaptive_2024-10-29-16:17.pkl",
-          "data_adaptive_2024-10-29-16:15.pkl", "data_7mm_s_2024-10-29-16:40.pkl", "data_7mm_s_2024-10-29-16:41.pkl",
-    "data_7mm_s_2024-10-29-16:42.pkl",
-    "data_7mm_s_2024-10-29-16:43.pkl",
-    "data_7mm_s_2024-10-29-16:44.pkl"]
-fnames = ["data_adaptive_2024-10-31-14:40.pkl"]
+dir = "../logs/experiments_11_8_2024/"
+fnames = []
 ax = None
-summary = pd.DataFrame(columns=["widths_mm", "deflections_mm", "exp_type"])
+summary = pd.DataFrame(columns=["widths_mm", "deflections_mm", "time", "exp_type"])
+if len(fnames) == 0:
+    fnames = os.listdir(dir)
+    fnames = [f for f in fnames if f.endswith(".pkl") and f.startswith("data")]
 for file in fnames:
     with open(dir + file, "rb") as f:
         df: pd.DataFrame = pkl.load(f)
@@ -240,21 +239,24 @@ for file in fnames:
     deflection_params = df["deflection_estimates"][0].keys()
     for param in deflection_params:
         df[param] = df["deflection_estimates"].apply(lambda x: x[param])
-    df.plot(subplots=True)
+    df.plot(subplots=True, kind='line', y=["Cp", "c_defl", "q"], x="position_mm")
+    plt.show()
     # df["position_mm"] = np.cumsum(df["velocities"] * 1 / 24)
     # df.drop(columns=["thermal_frames"], inplace=True)
-    summary.loc[-1] = [df["widths_mm"].mean(), df["deflections_mm"].mean(), "adaptive" if "adaptive" in file else "constant"]
+    # print(df["position_mm"].max())
+    success = df["position_mm"].max() > 100
+    if not success:
+        print(f"Experiment {file} did not complete succesfully.")
+    summary.loc[-1] = [df["widths_mm"].max(), df["deflections_mm"].max(), df["time_sec"].max(),
+                       "adaptive" if "adaptive" in file else "constant"]
     summary.index = summary.index + 1
 
 # summary.set_index("exp_type", inplace=True)
 
 summary.plot(subplots=True, ax=ax, kind='box', by="exp_type", column=["widths_mm", "deflections_mm"])
 plt.show()
+summary
 
-width_pval = ttest_rel(summary[summary["exp_type"] == "adaptive"]["widths_mm"], summary[summary["exp_type"] == "constant"]["widths_mm"]).pvalue
-defl_pval = ttest_rel(summary[summary["exp_type"] == "adaptive"]["deflections_mm"], summary[summary["exp_type"] == "constant"]["deflections_mm"]).pvalue
-print(f"Width p-value: {width_pval:.2e}")
-print(f"Deflection p-value: {defl_pval:.2e}")
 
 # plot_log_dir(list_of_files=fnames,
 #                 plot_cost=False)

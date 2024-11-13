@@ -2,7 +2,7 @@ from filterpy.kalman import UnscentedKalmanFilter, MerweScaledSigmaPoints, Exten
 from SquareRootUnscentedKalmanFilter import SquareRootUnscentedKalmanFilterParameterEstimation, SquareRootUnscentedKalmanFilter, SquareRootMerweScaledSigmaPoints
 from filterpy.common import Q_discrete_white_noise
 import numpy as np
-from models import ymax, Tc, MaterialProperties
+from models import ymax, MaterialProperties
 import scipy
 from abc import ABC, abstractmethod
 
@@ -128,15 +128,55 @@ class BoundedMerweScaledSigmaPoints(MerweScaledSigmaPoints):
         else:
             P = np.atleast_2d(P)
 
+        xt = x
+        Pt = P
+        for i in range(n):
+            D, S = scipy.linalg.schur(Pt)
+            sqrtD = np.diag(np.sqrt(np.diag(D)))
+            invSqrtD = np.diag(np.reciprocal(np.diag(sqrtD)))
+            # assert np.array_equal(D, np.diag(np.diag(D))), f"Schur decomposition failed. D is not diagonal. D={D}"
+            # assert np.array_equal(S @ S.T, np.eye(len(S))), f"Schur decomposition failed. S is not orthogonal. S={S}"
+            theta = np.zeros((n, n))
+            for l in range(n):
+                if l == 0:
+                    theta[l, :] = 1/(np.sqrt(Pt[i, i])) * (S[i:i+1, :] @ sqrtD)
+                else:
+                    el = np.eye(n)[:, l:l+1]
+                    theta[l, :] = (el - np.sum([(el.T @ theta.T[:, q:q+1]) * theta.T[:,q:q+1] for q in range(l)], axis=0)).T
+                    if (theta[l, :] == 0).all():
+                        e1 = np.eye(n)[:, 0:1]
+                        theta[l, :] = (e1 - np.sum([(e1.T @ theta.T[:, q:q+1]) * theta.T[:, q:q+1] for q in range(l)], axis=0)).T
+                theta[l, :] /= np.linalg.norm(theta[l, :])
+                if np.isnan(theta[l, :]).any():
+                    raise(ValueError("Theta is NaN"))
+            aki = 1/np.sqrt(Pt[i, i]) * (self.low[i] - xt[i])
+            bki = 1/np.sqrt(Pt[i, i]) * (self.high[i] - xt[i])
+            zki = theta @ invSqrtD @ S.T @ (x - xt)
+            alpha_i = 2**0.5 / (np.pi**0.5 * scipy.special.erf(bki/2**0.5) - scipy.special.erf(aki/2**0.5))
+            mu_i =  alpha_i * (np.exp(-aki**2/2) - np.exp(-bki**2/2))
+            A = np.exp(-(aki ** 2) / 2) * (aki - 2 * mu_i) if not np.isinf(-aki) else 0
+            B = np.exp(-(bki ** 2) / 2) * (bki - 2 * mu_i) if not np.isinf(bki) else 0
+            sigma2_i = alpha_i * (A - B) + mu_i**2 + 1
+            Pzz = np.diag([sigma2_i] + [1] * (n-1))
+            xt = S @ sqrtD @ theta.T @ zki + xt
+            Pt = S @ sqrtD @ theta.T @ Pzz @ theta @ sqrtD @ S.T
+
+        x = xt
+        P = Pt
         lambda_ = self.alpha**2 * (n + self.kappa) - n
         U = self.sqrt((lambda_ + n)*P)
         sigmas = np.zeros((2*n+1, n))
+
         # sigmas[0] = x
         sigmas[0] = np.minimum(self.high - 1e-6, np.maximum(self.low + 1e-6, x))
         for k in range(n):
             # pylint: disable=bad-whitespace
             sigmas[k+1]   = np.minimum(self.high-1e-6, np.maximum(self.subtract(x, -U[k]), self.low + 1e-6))
             sigmas[n+k+1] = np.minimum(self.high-1e-6, np.maximum(self.subtract(x, U[k]), self.low + 1e-6))
+
+        # for k in range(n):
+        #     sigmas[k+1] = self.subtract(x, -U[k])
+        #     sigmas[n+k+1] = self.subtract(x, U[k])
 
 
         return sigmas
@@ -230,6 +270,7 @@ class UKFIdentification(ABC):
 
         self.kf.x = w0
         self._data = {label: [(w0[i], w0[i], w0[i])] for i, label in enumerate(self.labels)}
+        self._x_hist = []
 
     @property
     def labels(self) -> list[str]:
@@ -264,10 +305,12 @@ class UKFIdentification(ABC):
         # self.ukf.P[9:11, 9:11] /= 0.99999 # forgettting factor
         self.kf.update(measurement, **kwargs)
         if isinstance(self.kf, SquareRootUnscentedKalmanFilterParameterEstimation):
-            ci_low, ci_high = self.kf.x - np.diag(self.kf.sqrt_P), self.kf.x + np.diag(self.kf.sqrt_P)
+            ci_low, ci_high = self.x - np.diag(self.kf.sqrt_P), self.x + np.diag(self.kf.sqrt_P)
         else:
-            ci_low, ci_high = self.kf.x - np.sqrt(np.diag(self.kf.P)), self.kf.x + np.sqrt(np.diag(self.kf.P))
-        self._data = {label: self._data[label] + [(ci_low[i], self.kf.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
+            ci_low, ci_high = self.x - np.sqrt(np.diag(self.kf.P)), self.x + np.sqrt(np.diag(self.kf.P))
+        self._data = {label: self._data[label] + [(ci_low[i], self.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
+        self._x_hist.append(self.x)
+        self.update_bounds()
         return self.kf.x
 
     @property
@@ -276,6 +319,21 @@ class UKFIdentification(ABC):
         Dictionary of parameter labels and values (with confidence intervals) [label: [(value, low_ci, high_ci)]]
         """
         return self._data
+
+    @property
+    @abstractmethod
+    def x(self) -> np.array:
+        """
+        State estimate
+        """
+        pass
+
+    @abstractmethod
+    def update_bounds(self):
+        """
+        Update the bounds
+        """
+        pass
 
 class EKFIdentification(ABC):
     def __init__(self, w0: np.array, dim_z: int, labels: list[str], lower_bounds: np.ndarray = -np.inf,
@@ -320,6 +378,13 @@ class EKFIdentification(ABC):
         """
         pass
 
+    @abstractmethod
+    def update_bounds(self):
+        """
+        Update the bounds
+        """
+        pass
+
     def update(self, measurement, **kwargs) -> tuple:
         """
         Update the adaptive parameters
@@ -332,6 +397,7 @@ class EKFIdentification(ABC):
         self.kf.update(measurement, HJacobian=self.HJacobian, Hx=self.hx)
         ci_low, ci_high = self.kf.x - np.sqrt(np.diag(self.kf.P)), self.kf.x + np.sqrt(np.diag(self.kf.P))
         self._data = {label: self._data[label] + [(ci_low[i], self.kf.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
+        self.update_bounds()
         return self.kf.x
 
     @property
@@ -343,33 +409,52 @@ class EKFIdentification(ABC):
 
 
 class DeflectionAdaptation(UKFIdentification):
-    def __init__(self, w0: np.array, labels):
+    def __init__(self, w0: np.array, labels, px_per_mm=1, frame_size_px=(384, 288)):
         """
         :param w0: Initial parameter estimate [x, y, xd, yd, x_rest, y_rest, c_defl, k_tool] in mm, mm/s, mm, mm, mm, mm, N/mm, N/mm
         """
-        super().__init__(w0, dim_z=4, labels=labels, lower_bounds=np.array([-np.inf, -np.inf, -np.inf, -np.inf, -np.inf, -np.inf, 0, 0]))
+        super().__init__(w0, dim_z=3, labels=labels, lower_bounds=np.array([0, 0, -np.inf, -np.inf, 0, 0, 0, 0]),
+                         upper_bounds=np.array([frame_size_px[0] / px_per_mm, frame_size_px[1] / px_per_mm, np.inf, np.inf, frame_size_px[0] / px_per_mm, frame_size_px[1] / px_per_mm, np.inf, np.inf]))
         assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
-        self.kf.P = np.diag([1**2, 4**2, 1, 1, 1**2, 2**2, 1, 1])
-        self.kf.R = np.diag([0.25**2, 0.5**2])
+        self.kf.P = np.diag([0.5**2, 0.5**2, 1, 1, 0.5**2, 0.5**2, 1, 0.25])
+        self.kf.R = np.diag([0.5**2, 0.5**2, 0.5**2])
         if isinstance(self.kf, SquareRootUnscentedKalmanFilterParameterEstimation):
             self.kf.sqrt_Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=1, block_size=2), np.zeros((4, 3))],
                                        [np.zeros((3, 4)), np.diag([1, 1, 1])]])
         else:
-            self.kf.Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=3, block_size=2), np.zeros((4, 4))],
-                                   [np.zeros((4, 4)), np.diag([0.001**2, 0.001**2, 0.1**2, 0.1**2])]])
+            self.kf.Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=4, block_size=2), np.zeros((4, 4))],
+                                   [np.zeros((4, 4)), np.diag([0.01**2, 0.01**2, 1**2, 0.1**2])]])
         self.kf.predict_x = lambda u: self.fx(self.kf.x, 1/24, v=u)
 
     @property
+    def x(self):
+        # x = np.array([*self.kf.x[0:6], self.c_defl, self.k_tool])
+        x = self.kf.x
+        return x
+
+    @property
     def c_defl(self):
-        return self.kf.x[6]
+        return abs(self.kf.x[6])
 
     @property
     def k_tool(self):
-        return 1
+        return abs(self.kf.x[7])
 
     @property
     def defl_mm(self):
         return np.linalg.norm(self.kf.x[0:2] - self.kf.x[4:6])
+
+    @property
+    def defl_std(self):
+        N = 1000
+        x1 = np.random.multivariate_normal(self.kf.x[0:2], self.kf.P[0:2, 0:2], N)
+        x2 = np.random.multivariate_normal(self.kf.x[4:6], self.kf.P[4:6, 4:6], N)
+        defl = np.linalg.norm(x1 - x2, axis=1)
+        return np.std(defl)
+
+    @property
+    def defl_hist_mm(self) -> list[float]:
+        return [np.linalg.norm(x[0:2] - self.kf.x[4:6]) for x in self._x_hist]
 
     @property
     def neutral_tip_mm(self):
@@ -378,10 +463,11 @@ class DeflectionAdaptation(UKFIdentification):
     def hx(self, x, **kwargs):
         """
         Measurement function
+        x, y, yn
         """
         # v = kwargs.get("v")
         # return np.array([x[0] * np.exp(-x[1] / v)])
-        return np.array([x[0], x[1]])
+        return np.array([x[0], x[1], x[5]])
 
     def HJacobian(self, x, **kwargs):
         """
@@ -395,14 +481,23 @@ class DeflectionAdaptation(UKFIdentification):
         State transition function
         """
         v = kwargs.get("v")
-        # x[6:] = np.maximum(0, x[6:])
-        x[0] += x[2] * dt
-        x[1] += x[3] * dt
         v_net = v * np.array([1, 0]) - x[2:4]
         v_hat = v_net / np.linalg.norm(v_net)
-        F = - x[7] * (x[0:2] - x[4:6]) - x[6] * np.exp(-np.linalg.norm(x[0:2] - x[4:6]) / np.linalg.norm(v_net)) * np.array([1, 0]) - 1 * x[2:4]
+        k = x[7]
+        c = x[6]
+        assert k >= 0, "k must be positive"
+        assert c >= 0, "c must be positive"
+        defl = x[0:2] - x[4:6]
+        F = -k * defl - c * np.exp(-np.linalg.norm(defl) / np.linalg.norm(v_net)) * np.array([1, 0])
+        x[0] += x[2] * dt
+        x[1] += x[3] * dt
         x[2:4] += F * dt
         return x
+
+    def update_bounds(self):
+        if self.points.low[4] < self.kf.x[0] - 0.25:
+            self.points.low[4] = self.kf.x[0] - 0.25
+
 
 class ThermalAdaptation(UKFIdentification):
     def __init__(self, w0: np.array, labels):
@@ -421,6 +516,11 @@ class ThermalAdaptation(UKFIdentification):
         # self.k = 0.46e-3
 
     @property
+    def x(self) -> np.array:
+        # return np.array([self.w_mm, self.q, self.Cp])
+        return self.kf.x
+
+    @property
     def rho_kg_mm3(self):
         return self.rho * 1e-9
 
@@ -431,15 +531,15 @@ class ThermalAdaptation(UKFIdentification):
 
     @property
     def q(self):
-        return self.kf.x[1]
+        return abs(self.kf.x[1])
 
     @property
     def Cp(self):
-        return self.kf.x[2]
+        return abs(self.kf.x[2])
 
     @property
     def alpha(self):
-        return self.k_w_mmK / (self.rho_kg_mm3 * self.kf.x[2])
+        return self.k_w_mmK / (self.rho_kg_mm3 * self.Cp)
 
     @property
     def w_mm(self):
@@ -460,12 +560,17 @@ class ThermalAdaptation(UKFIdentification):
         k = self.k_w_mmK
         Cp = x[2]
         q = x[1]
-        if q <= 0:
-            y = 0
-        else:
-            material = MaterialProperties(_k=k, _rho=self.rho*1e-9, _Cp=Cp)
-            y = ymax(v, material, q, dT)
-            if np.isinf(y) or np.isnan(y):
-                return self.kf.x
+        assert q >= 0, "q must be positive"
+        assert Cp >= 0, "Cp must be positive"
+        # if q <= 0:
+        #     y = 0
+        # else:
+        material = MaterialProperties(_k=k, _rho=self.rho*1e-9, _Cp=Cp)
+        y = ymax(v, material, q, dT)
+        if np.isinf(y) or np.isnan(y):
+            return self.kf.x
         x[0] = y
         return x
+
+    def update_bounds(self):
+        pass

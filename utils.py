@@ -23,7 +23,7 @@ def thermal_frame_to_color(thermal_frame):
     norm_frame = cv.normalize(thermal_frame, None, 0, 255, cv.NORM_MINMAX, cv.CV_8U)
     return cv.applyColorMap(norm_frame, cmapy.cmap('hot'))
 
-def draw_info_on_frame(frame, deflection, width, velocity, tool_tip_pos, neutral_pos):
+def draw_info_on_frame(frame, deflection, width, velocity, tool_tip_pos=None, neutral_pos=None, meas=None):
     cv.putText(frame, f"Deflection: {deflection:.2f} mm",
            (10, 20), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     cv.putText(frame, f"Width: {width:.2f} mm",
@@ -34,6 +34,8 @@ def draw_info_on_frame(frame, deflection, width, velocity, tool_tip_pos, neutral
         cv.circle(frame, (int(tool_tip_pos[0]), int(tool_tip_pos[1])), 3, (0, 255, 0), -1)
     if neutral_pos is not None:
         cv.circle(frame, (int(neutral_pos[0]), int(neutral_pos[1])), 3, (0, 0, 255), -1)
+    if meas is not None:
+        cv.circle(frame, (int(meas[0]), int(meas[1])), 3, (255, 0, 0), -1)
     return frame
 
 def point_in_ellipse(x, y, ellipse) -> bool:
