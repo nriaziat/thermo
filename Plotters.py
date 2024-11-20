@@ -3,6 +3,7 @@ from matplotlib import rcParams
 import do_mpc
 
 class AdaptiveParameterPlotter:
+    window_length = 100
     def __init__(self, adaptive_model, plot_indices: list[bool| int]):
         self._adaptive_model = adaptive_model
         self._plot_indices = plot_indices
@@ -32,21 +33,26 @@ class AdaptiveParameterPlotter:
             f.remove()
         self.fills = []
         if self.n == 1:
-            y = [x[1] for x in self._adaptive_model.data[self._adaptive_model.labels[0]]]
-            self.lines[0].set_data(range(len(self._adaptive_model.data[self._adaptive_model.labels[0]])), y)
-            self.axs.relim()
+            label = self._adaptive_model.labels[0]
+            y = [x[1] for x in self._adaptive_model.data[label]]
+            self.lines[0].set_data(range(len(self._adaptive_model.data[label])), y)
             self.axs.autoscale_view()
+            self.axs.set_xlim(max(0, len(self._adaptive_model.data[label]) - self.window_length),
+                             len(self._adaptive_model.data[label]))
+            self.axs.relim(visible_only=True)
         else:
             for i, label in enumerate(self._labels):
                 y = [x[1] for x in self._adaptive_model.data[label]]
                 self.lines[i].set_data(range(len(self._adaptive_model.data[label])), y)
-                self.axs[i].relim()
                 self.axs[i].autoscale_view()
+                self.axs[i].set_xlim(max(0, len(self._adaptive_model.data[label]) - self.window_length), len(self._adaptive_model.data[label]))
+                self.axs[i].relim(visible_only=True)
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
 
 class GenericPlotter:
+    window_length = 100
     def __init__(self, n_plots: int, labels: list[str], x_label: str, y_labels: list[str]):
         plt.ion()
         rcParams['text.usetex'] = True
@@ -72,10 +78,13 @@ class GenericPlotter:
             if label == 'Deflection' and defl_hist is not None:
                 self._data[label] = defl_hist
             else:
+                if len(self._data[label]) > self.window_length:
+                    self._data[label] = self._data[label][1:]
                 self._data[label].append(y[i])
             self.lines[i].set_data(range(len(self._data[label])), self._data[label])
-            self.axs[i].relim()
+            # self.axs[i].set_xlim(max(0, len(self._data[label]) - self.window_length), len(self._data[label]))
             self.axs[i].autoscale_view()
+            self.axs[i].relim()
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 

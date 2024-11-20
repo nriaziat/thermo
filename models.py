@@ -28,6 +28,9 @@ class MaterialProperties:
 
     @alpha.setter
     def alpha(self, value):
+        """
+        Set the thermal diffusivity
+        """
         if value < 0:
             self._alpha = 1e-6
         else:
@@ -35,14 +38,23 @@ class MaterialProperties:
 
     @property
     def rho(self):
+        """
+        Density [kg/mm^3]
+        """
         return self._rho
 
     @property
     def Cp(self):
+        """
+        Specific heat capacity [J/kgK]
+        """
         return self._Cp
 
     @property
     def k(self):
+        """
+        Conductivity [W/mmK]
+        """
         return self._k
 
     @rho.setter
@@ -75,154 +87,74 @@ def F(Tc):
     return (1 + (1.477 * Tc) ** -1.407) ** 0.7107
 
 # @lru_cache
-def ymax(u, material, q, dT):
+def ymax(u, material: MaterialProperties, q, dT):
     d = 25 # tissue thickness [mm]
     T_star = Tc(dT, material, q, d)
     if T_star < 1/0.3856:
-        return 1/np.sqrt(2*np.pi*np.exp(1)) * q * material.alpha / (u * d * material.k * dT) * F(T_star)
+        return 1/np.sqrt(2*np.pi*np.exp(1)) * q / (u * d * material.rho * material.Cp * dT) * F(T_star)
     return 4 * material.alpha / (u * exp_gamma) * F(T_star)
 
-def Tc(dT: float, material: MaterialProperties, P: float, d: float):
+def Tc(dT: float, material: MaterialProperties, q: float, d: float):
     """
     Calculate the dimensionless temperature.
     :param dT: Temperature difference [K]
     :param material: Material properties
-    :param P: Power [W]
+    :param q: Power [W]
     :param d: tissue thickness [mm]
     :return: dimensionless temperature
     """
-    return 2 * np.pi * material.k * d * dT / P
+    return 2 * np.pi * material.k * d * dT / q
 
 humanTissue = MaterialProperties(_rho=1090e-9, _Cp=3421, _k=0.46e-3)
-
 hydrogelPhantom = MaterialProperties(_rho=1310e-9, _Cp=3140, _k=0.6e-3)
-
-# class ToolTipKF(KalmanFilter):
-#     def __init__(self, damping_ratio, pos=None):
-#         super().__init__(dim_x=4, dim_z=2, dim_u=1)
-#         self._init = False
-#         if pos is not None:
-#             self.x = np.array([pos[0], 0, pos[1], 0])
-#         else:
-#             self.x = np.array([0, 0, 0, 0])
-#         self.F = np.array([[1, 1, 0, 0],
-#                            [0, damping_ratio, 0, 0],
-#                            [0, 0, 1, 1],
-#                            [0, 0, 0, damping_ratio]])
-#         self.H = np.array([[1, 0, 0, 0],
-#                            [0, 0, 1, 0]])
-#         self.P *= 4
-#         self.R = 9 * np.eye(2)
-#         self.Q = Q_discrete_white_noise(dim=4, dt=1/24, var=36)
-#         self._neutral_tip_candidates = []
-#         self.neutral_tip_pos = None
-#
-#     @property
-#     def pos_px(self) -> np.ndarray[int, int] | None:
-#         if not self._init:
-#             return None
-#         return np.array([int(self.x[2]), int(self.x[0])])
-#
-#     def update_with_measurement(self, frame: np.ndarray[float]) -> tuple[float, float]:
-#         """
-#         Update the tool deflection based on the current frame
-#         :param frame: Temperature field from the camera.
-#         :return: deflection [px], deflection rate [px/s]
-#         """
-#         tool_tip = find_tooltip(frame, 60)
-#         if tool_tip is None:
-#             return 0, 0
-#         elif not self._init:
-#             self._neutral_tip_candidates.append(tool_tip)
-#             if len(self._neutral_tip_candidates) > 10:
-#                 self.neutral_tip_pos = np.mean(self._neutral_tip_candidates, axis=0)
-#                 self.x = np.array([self.neutral_tip_pos[0], 0, self.neutral_tip_pos[1], 0])
-#                 self._init = True
-#         else:
-#             self.predict()
-#             self.update(tool_tip)
-#             if self.x[0] < self.neutral_tip_pos[0]:
-#                 self.neutral_tip_pos = self.x[0], self.neutral_tip_pos[1]
-#             deflection = np.array(
-#                 [self.x[0] - self.neutral_tip_pos[0], self.x[2] - self.neutral_tip_pos[1]])
-#             ddeflection = np.array([self.x[1], self.x[3]])
-#             return np.linalg.norm(deflection), np.linalg.norm(ddeflection) * np.sign(np.dot(deflection, ddeflection))
-#         return 0, 0
 
 class ElectrosurgeryCostMinimizationModel(ABC):
 
-    def __init__(self, material: MaterialProperties, vlim: tuple[float, float] = (0.1, 10)):
-        self.material = material
-        self._vmin = vlim[0]
-        self._vmax = vlim[1]
+    def __init__(self):
+        self.vmin = 0
+        self.vmax = 10
 
     @abstractmethod
-    def find_optimal_velocity(self) -> np.ndarray:
+    def find_optimal_velocity(self, *args) -> np.ndarray:
         pass
 
     @abstractmethod
-    def cost_function(self, **kwargs) -> float:
+    def cost_function(self, *args, **kwargs) -> float:
         pass
 
-    @abstractmethod
-    def isotherm_widths_mm(self) -> float | np.ndarray[float]:
-        pass
 
 class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
-    _c_defl = 0.5  # deflection damping constant [s]
-    t_death = 60  # death temperature [C]
-    Ta = 20 # ambient temperature [C]
+    t_death: float = 60  # death temperature [C]
+    Ta: float = 20 # ambient temperature [C]
 
-    def __init__(self, material: MaterialProperties, vlim: tuple[float, float] = (0.1, 10),
+    def __init__(self,
                  qw = 1, qd = 1, r = 0.1):
-        super().__init__(material, vlim)
-        self._isotherm_temps = np.array([self.t_death])
+        super().__init__()
         self._isotherm_measurement_mm = 0
         self._deflection_measurement_mm = 0
-        self._b = 0.5
         self._P = 40
-        self._u0 = (vlim[0] + vlim[1]) / 2
+        self._u0 = (self.vmin + self.vmax) / 2
         self.r = r  # input penalty
         self.qw = qw
         self.qd = qd
+        self.v_star = 7
 
-    def cost_function(self, v) -> float:
-        return self.qw * self.isotherm_width_model(v) + self.qd * self.deflection_model(v) + self.r * (v-self._u0)**2
+    def cost_function(self, v: float, material: MaterialProperties, c_defl: float, q: float) -> float:
+        return (self.qw * self.isotherm_width_model(material, v, q) + self.qd * self.deflection_model(v, c_defl) +
+                self.r * 0 * (v-self._u0)**2 + self. r * np.max([0, self.v_star - v])**2)
 
-    def isotherm_width_model(self, v: float) -> float:
-        return ymax(v, self.material, self._P, self.t_death - self.Ta)
+    def isotherm_width_model(self, material: MaterialProperties,
+                             v: float, q: float) -> float:
+        return ymax(v, material, q, self.t_death - self.Ta)
 
-    def deflection_model(self, v: float) -> float:
-        if self._c_defl < 0:
-            self._c_defl = 0
-        return self._c_defl * np.exp(-self.deflection_mm / v)
+    @staticmethod
+    def deflection_model(v: float, c_defl: float) -> float:
+        return 10 * np.exp(-c_defl / v)
 
-    def find_optimal_velocity(self):
-        res = minimize_scalar(self.cost_function, bounds=[self._vmin, self._vmax], method='bounded')
+    def find_optimal_velocity(self, material: MaterialProperties, c_defl: float, q: float):
+        res = minimize_scalar(self.cost_function, bounds=[self.vmin, self.vmax], method='bounded', args=(material, c_defl, q))
         self._u0 = res.x
         return self._u0
-
-    @property
-    def isotherm_temps(self) -> np.ndarray[float]:
-        return self._isotherm_temps
-
-    @property
-    def deflection_mm(self) -> float:
-        return self._deflection_measurement_mm
-
-    @deflection_mm.setter
-    def deflection_mm(self, value: float):
-        assert value >= 0, "Deflection must be non-negative"
-        self._deflection_measurement_mm = value
-
-    @property
-    def isotherm_widths_mm(self) -> float | np.ndarray[float]:
-        return self._isotherm_measurement_mm
-
-    @isotherm_widths_mm.setter
-    def isotherm_widths_mm(self, value: float):
-        self._isotherm_measurement_mm = value
-
 
 
 class ElectrosurgeryMPCModel(ABC, do_mpc.model.Model):
