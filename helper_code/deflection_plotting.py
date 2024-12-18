@@ -4,7 +4,7 @@ import numpy as np
 from ParameterEstimation import DeflectionAdaptation
 from scipy.stats import linregress
 import cv2 as cv
-from utils import thermal_frame_to_color, find_tooltip, list_of_frames_to_video
+from utils import thermal_frame_to_color, find_tooltip
 import matplotlib
 import seaborn as sns
 

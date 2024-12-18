@@ -1,8 +1,6 @@
 import cv2
-import do_mpc.controller
 from helper_code.aruco_tracker import ArucoTracker
 from T3pro import T3pro
-from testbed import Testbed, TestbedState
 from ParameterEstimation import *
 from utils import *
 from Plotters import *
@@ -34,7 +32,6 @@ N_STEPS = 1000
 class ExperimentType(StrEnum):
     REAL = 'REAL'
     PRERECORDED = "PRERECORDED"
-    SIMULATED = "SIMULATED"
 
 # ControlMode = StrEnum('ControlMode', 'AUTONOMOUS CONSTANT_VELOCITY TELEOPERATED SHARED_CONTROL')
 class ControlMode(StrEnum):
@@ -46,7 +43,6 @@ class ControlMode(StrEnum):
 @dataclass(frozen=True)
 class Devices:
     t3: T3pro
-    testbed: Testbed
     joystick: pygame.joystick.Joystick
 
 @dataclass(frozen=True)
@@ -69,7 +65,6 @@ class RunConfig:
     constant_velocity: float
     log_save_dir: str
     log_file_to_load: str
-    mpc: bool
     home: bool
     plot_adaptive_params: bool
     material: MaterialProperties
@@ -118,9 +113,7 @@ def update(run_conf: RunConfig,
            defl_adaptation: DeflectionAdaptation,
            therm_adaptation: ThermalAdaptation,
            u0: float, frame: np.ndarray,
-           vstar: float,
-           init_mpc: bool,
-           mpc: Optional[do_mpc.controller.MPC]):
+           vstar: float):
     """
     Update velocity and adaptive parameters
     :param run_conf: Running parameters
@@ -133,8 +126,6 @@ def update(run_conf: RunConfig,
     :param u0: Current velocity
     :param vstar: Desired velocity
     :param frame: Thermal frame
-    :param init_mpc: MPC initialization flag
-    :param mpc: Optional MPC object
     :return: Updated velocity, deflection, width, MPC initialization flag
     """
     tip_px = find_tooltip(frame, params.t_death + 10)
@@ -156,54 +147,22 @@ def update(run_conf: RunConfig,
         update_kf(model, material, defl_adaptation, therm_adaptation, tip_mm, w_mm, u0)
     else:
         if tip_mm is None:
-            return u0, 0, w_mm, init_mpc, tip_candidates_px
-        return u0, np.linalg.norm(tip_mm - defl_adaptation.neutral_tip_mm), w_mm, init_mpc, tip_candidates_px
-    if not init_mpc and run_conf.mpc:
-        mpc.x0['width_0'] = w_mm
-        mpc.x0['tip_lead_dist'] = tip_lead_distance
-        mpc.set_initial_guess()
-        init_mpc = True
-    if run_conf.mpc:
-        u0 = mpc.make_step(np.array([w_mm, tip_lead_distance])).item()
-    else:
-        u0 = model.find_optimal_velocity(material, defl_adaptation.c_defl, therm_adaptation.q, vstar)
-    return u0, defl_adaptation.defl_mm, therm_adaptation.w_mm, init_mpc, tip_candidates_px
+            return u0, 0, w_mm, tip_candidates_px
+        return u0, np.linalg.norm(tip_mm - defl_adaptation.neutral_tip_mm), w_mm, tip_candidates_px
 
-def setup_mpc(model, mpc, defl_adapt, therm_adapt, r, params: Parameters):
-    mpc.set_objective(mterm=model.aux['mterm'], lterm=model.aux['lterm'])
-    mpc.set_rterm(u=r)
-    mpc.bounds['lower', '_u', 'u'] = params.v_min
-    mpc.bounds['upper', '_u', 'u'] = params.v_max
-    for i in range(model.n_isotherms):
-        mpc.bounds['lower', '_x', f'width_{i}'] = 0
-    mpc.bounds['lower', '_z', 'deflection'] = 0
-
-    tvp_template = mpc.get_tvp_template()
-
-    def tvp_fun(t_now):
-        tvp_template['_tvp'] = np.array([model.deflection_mm, defl_adapt.b, therm_adapt.b])
-        return tvp_template
-
-    mpc.set_tvp_fun(tvp_fun)
-    mpc.u0 = (params.v_max + params.v_min) / 2
-    mpc.setup()
-
-    return MPCPlotter(mpc.data, isotherm_temps=model.isotherm_temps)
+    u0 = model.find_optimal_velocity(material, defl_adaptation.c_defl, therm_adaptation.q, vstar)
+    return u0, defl_adaptation.defl_mm, therm_adaptation.w_mm, tip_candidates_px
 
 def main(model,
          run_conf: RunConfig,
-         devices: Devices,
-         mpc: Optional[do_mpc.controller.MPC] = None) -> None:
+         devices: Devices) -> None:
     """
     Main function to run the experiment
     :param model: Model object
     :param run_conf: Running parameters
     :param devices: Devices object
-    :param mpc: Optional MPC object
     """
     params = Parameters()
-    if run_conf.mpc:
-        assert mpc is not None, "MPC object must be provided if MPC is enabled"
 
     ## Initialize the parameter adaptation
     material = deepcopy(run_conf.material)
@@ -217,15 +176,12 @@ def main(model,
 
     #############################
 
-    if run_conf.mpc:
-        plotter = setup_mpc(model, mpc, deflection_adaptation, thermal_adaptation, 0.1, params)
-    else:
-        plotter = GenericPlotter(n_plots=3,
-                                 labels=['Widths', 'Velocities', 'Deflections'],
-                                 x_label='Time [s]',
-                                 y_labels=[r'$\text{Widths [mm]}$',
-                                           r'$\text{Velocities [mm/s]}$',
-                                           r'$\delta \text{[mm]}$'])
+    plotter = GenericPlotter(n_plots=3,
+                             labels=['Widths', 'Velocities', 'Deflections'],
+                             x_label='Time [s]',
+                             y_labels=[r'$\text{Widths [mm]}$',
+                                       r'$\text{Velocities [mm/s]}$',
+                                       r'$\delta \text{[mm]}$'])
     if run_conf.plot_adaptive_params:
         deflection_plotter = AdaptiveParameterPlotter(deflection_adaptation, plot_indices=[0, 0, 0, 0, 0, 0, 1])
         thermal_plotter = AdaptiveParameterPlotter(thermal_adaptation, plot_indices=[0, 1, 1, 1, 1])
@@ -239,13 +195,13 @@ def main(model,
     plotconfig = PlotConfig(run_conf, plotter, 0, 0, 0, deflection_plotter, thermal_plotter, None)
 
     if run_conf.exp_type is ExperimentType.PRERECORDED:
-        prerecorded_experiment(run_conf, plotconfig, model, material, mpc, params, deflection_adaptation, thermal_adaptation)
+        prerecorded_experiment(run_conf, plotconfig, model, material, params, deflection_adaptation, thermal_adaptation)
 
     elif run_conf.exp_type is ExperimentType.SIMULATED:
-        simulated_experiment(run_conf, plotconfig, model, material, mpc, params, deflection_adaptation, thermal_adaptation)
+        simulated_experiment(run_conf, plotconfig, model, material, params, deflection_adaptation, thermal_adaptation)
 
     elif run_conf.exp_type is ExperimentType.REAL:
-        real_experiment(run_conf, plotconfig, model, material, devices, mpc, params, deflection_adaptation, thermal_adaptation)
+        real_experiment(run_conf, plotconfig, model, material, devices, params, deflection_adaptation, thermal_adaptation)
 
     plt.show()
     for device in devices.__dict__.values():
@@ -258,11 +214,8 @@ def plot(plotconfig: PlotConfig) -> bool:
     """
     :param plotconfig: Plot configuration
     """
-    if plotconfig.run_conf.mpc:
-        plotconfig.plotter.plot()
-    else:
-        plotconfig.plotter.plot([plotconfig.w_mm,
-                                 plotconfig.u0, plotconfig.defl_mm])
+    plotconfig.plotter.plot([plotconfig.w_mm,
+                             plotconfig.u0, plotconfig.defl_mm])
     if plotconfig.deflection_plotter is not None:
         plotconfig.deflection_plotter.plot()
     if plotconfig.thermal_plotter is not None:
@@ -274,7 +227,7 @@ def plot(plotconfig: PlotConfig) -> bool:
 
 
 def real_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
-                    model, material: MaterialProperties, devices, mpc,
+                    model, material: MaterialProperties, devices,
                     params: Parameters,
                     defl_adaptation: DeflectionAdaptation,
                     therm_adaptation: ThermalAdaptation):
@@ -298,7 +251,6 @@ def real_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
     info, lut = t3.info()
     thermal_arr = lut[raw_frame]
     thermal_frame_to_color(thermal_arr)
-    init_mpc = False
 
     start_quit = messagebox.askyesno("Start Experiment?", message="Press yes to continue, or no to cancel.")
     if not start_quit:
@@ -337,7 +289,7 @@ def real_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
             u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(run_conf, params, model, material,
                                                                  tip_neutral_px, defl_adaptation,
                                                                  therm_adaptation, u0, thermal_arr,
-                                                                 init_mpc=init_mpc, mpc=mpc, vstar=vstar)
+                                                                 vstar=vstar)
         except ValueError:
             print("Covariance error, ending.")
             break
@@ -379,8 +331,6 @@ def real_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
             break
 
         ret = tb.set_speed(u0)
-        if ret is TestbedState.HOMED or ret is TestbedState.RIGHT:
-            break
         dt = (datetime.now() - time0).total_seconds()
         if cv.waitKey(1) & 0xFF == ord('q') or pos == -1:
             break
@@ -391,50 +341,8 @@ def real_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
     print(f"7mm/s equivalent time: {pos / 7:.2f} seconds")
     data_logger.save_log()
 
-def simulated_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
-                         model, material, mpc,
-                         params: Parameters,
-                         deflection_adaptation: DeflectionAdaptation,
-                         thermal_adaptation: ThermalAdaptation):
-    simulator = do_mpc.simulator.Simulator(model)
-    simulator.set_param(t_step=params.time_step, integration_tool='idas')
-    sim_tvp = simulator.get_tvp_template()
-
-    def sim_tvp_fun(t_now):
-        sim_tvp['d'] = 0.5
-        sim_tvp['defl_meas'] = model.deflection_mm
-        sim_tvp['P'] = 20
-        return sim_tvp
-
-    simulator.set_tvp_fun(sim_tvp_fun)
-    simulator.setup()
-    x0 = np.linspace(2, 10, model.n_isotherms)
-    simulator.x0 = x0
-    mpc.x0 = x0
-    simulator.set_initial_guess()
-    mpc.set_initial_guess()
-    for _ in tqdm.trange(params.n_steps):
-        u0 = mpc.make_step(x0)
-        defl_mm = deflection_adaptation.b * np.exp(-model._c_defl / u0.item()) * np.random.normal(1, 0.05)
-        if defl_mm < 0:
-            defl_mm = 0
-        deflection_adaptation.update(defl_mm, u0.item())
-        u_prime = (2 * material.alpha / u0) * np.sqrt(
-            u0 / (4 * np.pi * material.k * material.alpha * (model.t_death - model.Ta)))
-        thermal_adaptation.update(x0.item(), u_prime.item())
-        model.deflection_mm = defl_mm
-        x0 = simulator.make_step(u0)
-        pltconfig.w_mm = x0.item()
-        pltconfig.defl_mm = defl_mm
-        pltconfig.u0 = u0.item()
-        if not plot(pltconfig):
-            break
-        pltconfig.deflection_plotter.plot()
-        pltconfig.thermal_plotter.plot()
-        plt.pause(0.0001)
-
 def prerecorded_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
-                           model, material: MaterialProperties, mpc,
+                           model, material: MaterialProperties,
                            params: Parameters,
                            defl_adaptation: DeflectionAdaptation,
                            therm_adaptation: ThermalAdaptation):
@@ -457,16 +365,14 @@ def prerecorded_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
             vstars = [None] * len(thermal_frames)
         vs = data['velocities']
 
-    init_mpc = False
     tip_neutral_px = []
     defl_covs = []
     defls = []
-    fill = None
     for i, (frame, b, v, vstar) in enumerate(zip(tqdm.tqdm(thermal_frames), bs, vs, vstars)):
         color_frame = thermal_frame_to_color(frame)
         vstar = 7 if vstar is None else vstar
         u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(run_conf, params, model, material, tip_neutral_px, defl_adaptation, therm_adaptation, v, vstar,
-                                                             frame, init_mpc, mpc)
+                                                             frame)
         new_tip_pos = defl_adaptation.kf.x[:2] * params.thermal_px_per_mm
         color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos, defl_adaptation.neutral_tip_mm * params.thermal_px_per_mm)
         cv.imshow("Frame", color_frame)
@@ -477,9 +383,6 @@ def prerecorded_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
             break
         defl_covs.append(3 * defl_adaptation.defl_std)
         defls.append(defl_mm)
-        # if fill is not None:
-        #     fill.remove()
-        # fill = plotter.axs[-1].fill_between(range(len(defl_covs)), np.array(defls) - defl_covs, np.array(defls) + defl_covs, alpha=0.25, color='blue')
 
         cv.waitKey(1)
         plt.pause(0.0001)
