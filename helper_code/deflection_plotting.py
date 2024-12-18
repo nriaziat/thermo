@@ -5,10 +5,24 @@ from ParameterEstimation import DeflectionAdaptation
 from scipy.stats import linregress
 import cv2 as cv
 from utils import thermal_frame_to_color, find_tooltip, list_of_frames_to_video
-from matplotlib import rcParams
+import matplotlib
+import seaborn as sns
 
-rcParams['text.usetex'] = True
-rcParams['text.latex.preamble'] = r'\usepackage{amsmath} \usepackage{siunitx}'
+linewidth_in = 3.48761 #inches
+textwidth_in = 7.1413
+
+# plt.rcParams['figure.figsize'] = [25, 10]
+plt.rcParams['axes.grid'] = True
+plt.rcParams['font.size'] = 8
+from matplotlib.backends.backend_pgf import FigureCanvasPgf
+matplotlib.backend_bases.register_backend('pdf', FigureCanvasPgf)
+plt.rcParams.update({
+    "pgf.texsystem": "pdflatex",
+    'font.family': 'serif',
+    'text.usetex': True,
+    'pgf.rcfonts': False,
+})
+plt.rcParams['text.latex.preamble'] = r'\usepackage{amsmath} \usepackage{siunitx}'
 
 thermal_px_per_mm = 7
 
@@ -88,22 +102,26 @@ print(f"RMSE: {np.sqrt(np.mean(error**2)):.2f} mm")
 linreg = linregress(aruco_defl, filtered_therm_defl)
 
 
-plt.show()
-
-fig, ax = plt.subplots(2, 1)
-ax[0].plot(therm_defl, '.b', label='Raw Thermal Signal', alpha=0.1)
-ax[0].plot(aruco_defl, '--r', label='Aruco Signal', alpha=1)
-ax[0].plot(filtered_therm_defl, 'b', label='Filtered Thermal Signal', linewidth=2)
+fig, ax = plt.subplots(2, 1, figsize=(linewidth_in, 2 * linewidth_in))
+# ax[0].plot(therm_defl, '.b', label='Raw Thermal Signal', alpha=0.1)
+sns.lineplot(x=range(len(therm_defl)), y=therm_defl, ax=ax[0], alpha=0.25, color='b', label='Raw Thermal Signal', linestyle='dotted', linewidth=1)
+# ax[0].plot(aruco_defl, '--r', label='Aruco Signal', alpha=1)
+sns.lineplot(x=range(len(aruco_defl)), y=aruco_defl, ax=ax[0], color='r', label='Aruco Signal', linestyle='--', linewidth=1)
+# ax[0].plot(filtered_therm_defl, 'b', label='Filtered Thermal Signal', linewidth=2)
+sns.lineplot(x=range(len(filtered_therm_defl)), y=filtered_therm_defl, ax=ax[0], color='b', label='Filtered Thermal Signal', linewidth=1)
 # ax[0].plot(filtered_aruco_defl, 'r', label='Filtered Aruco', linewidth=2)
 ax[0].legend()
 ax[0].set_ylabel("Deflection [mm]")
-ax[1].scatter(aruco_defl, filtered_therm_defl, marker='.', label='Filtered Thermal Signal', alpha=0.25)
+# ax[1].scatter(aruco_defl, filtered_therm_defl, marker='.', label='Filtered Thermal Signal', alpha=0.25)
+sns.scatterplot(x=aruco_defl, y=filtered_therm_defl, ax=ax[1], alpha=0.25, label='Filtered Thermal Signal', marker='.')
 x = np.linspace(0, max(aruco_defl), 25)
-ax[1].plot(x, x, 'g--', label='y=x')
+# ax[1].plot(x, x, 'g--', label='y=x')
+sns.lineplot(x=x, y=x, ax=ax[1], color='g', label='y=x', linestyle='--', linewidth=1)
 pval_order = np.floor(np.log10(linreg.pvalue))
 pval_digits = linreg.pvalue * 10**-pval_order
 # ax[1].plot(x, linreg.slope * x + linreg.intercept, 'r', label=r'$R^2={{{:.2f}}}, p={{{:.1f}}} * 10^{{{:.0f}}}$'.format(linreg.rvalue**2, pval_digits, pval_order))
-ax[1].plot(x, linreg.slope * x + linreg.intercept, 'r', label=r'y={:.2f}x + {:.2f}'.format(linreg.slope, linreg.intercept))
+# ax[1].plot(x, linreg.slope * x + linreg.intercept, 'r', label=r'y={:.2f}x + {:.2f}'.format(linreg.slope, linreg.intercept))
+sns.lineplot(x=x, y=linreg.slope * x + linreg.intercept, ax=ax[1], color='r', label=f"y={linreg.slope:.2f}x + {linreg.intercept:.2f}")
 ax[1].set_xlabel("Aruco Tag Deflection [mm]")
 ax[1].set_ylabel("Thermal Camera Deflection [mm]")
 ax[1].legend()
@@ -112,9 +130,10 @@ ax[1].set_title("Deflection Comparison")
 # ax[0].set_ylim(-0.1, 1.2)
 # ax[1].set_ylim(-0.1, 1.2)
 ax[0].set_title("Deflection Measurement")
+ax[0].set_xlabel("Samples")
+sns.move_legend(ax[0], "upper left", ncol=1, frameon=True)
+sns.move_legend(ax[1], "upper left", ncol=1, frameon=True)
 
-fig, ax = plt.subplots()
-params = np.array(params)
-ax.plot(params, label='Decay rate [mm/s]')
-
+fig.tight_layout()
+plt.savefig('deflection_comparison.pgf')
 plt.show()

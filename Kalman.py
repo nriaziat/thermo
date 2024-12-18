@@ -93,10 +93,14 @@ class TruncatedUnscentedKalmanFilter(UnscentedKalmanFilter):
 
         self.eta = self.y.T @ self.SI @ self.y
 
-        if self.eta > 3:
-            self.alpha = 1 if (a:=np.dot(self.y, self.y)) <= (b:=np.trace(self.S)) else b/a
-        else:
-            self.alpha = 1
+        # # TODO: Determine if this is necessary
+        # if self.eta > 3:
+        #     self.alpha = 1 if (a:=np.dot(self.y, self.y)) <= (b:=np.trace(self.S)) else b/a
+        # else:
+        #     self.alpha = 1
+
+        self.alpha = 1
+
 
         self.P = (self.P - dot(self.K, dot(self.S, self.K.T))) / self.alpha
 

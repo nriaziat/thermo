@@ -108,6 +108,27 @@ def Tc(dT: float, material: MaterialProperties, q: float, d: float):
 humanTissue = MaterialProperties(_rho=1090e-9, _Cp=3421, _k=0.46e-3)
 hydrogelPhantom = MaterialProperties(_rho=1310e-9, _Cp=3140, _k=0.6e-3)
 
+def cut_force_model(v: float, c_defl: float) -> float:
+    """
+    Deflection model
+    :param v: velocity [mm/s]
+    :param c_defl: deflection rate [mm/s]
+    """
+    return 20 * np.exp(-c_defl / v)
+
+def isotherm_width_model(material: MaterialProperties,
+                         v: float, q: float, dT: float) -> float:
+    """
+    Calculate the isotherm width
+    :param material: material properties
+    :param v: velocity [mm/s]
+    :param q: power [W]
+    :param dT: temperature difference [K]
+    """
+    return ymax(v, material, q, dT)
+
+
+
 class ElectrosurgeryCostMinimizationModel(ABC):
 
     def __init__(self):
@@ -137,22 +158,36 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
         self.r = r  # input penalty
         self.qw = qw
         self.qd = qd
-        self.v_star = 7
 
-    def cost_function(self, v: float, material: MaterialProperties, c_defl: float, q: float) -> float:
-        return (self.qw * self.isotherm_width_model(material, v, q) + self.qd * self.deflection_model(v, c_defl) +
-                self.r * 0 * (v-self._u0)**2 + self. r * np.max([0, self.v_star - v])**2)
+    def cost_function(self, v: float,
+                      material: MaterialProperties,
+                      c_defl: float,
+                      q: float,
+                      vstar: float) -> float:
+        """
+        Cost function
+        :param v: velocity [mm/s]
+        :param material: material properties
+        :param c_defl: deflection rate [mm/s]
+        :param q: power [W]
+        :param vstar: desired velocity [mm/s]
+        """
+        dT = self.t_death - self.Ta
+        return (self.qw * isotherm_width_model(material, v, q, dT) + self.qd * cut_force_model(v, c_defl) +
+                self.r * 0 * (v-self._u0) ** 2 + self.r * np.max([0, vstar - v]) ** 2)
 
-    def isotherm_width_model(self, material: MaterialProperties,
-                             v: float, q: float) -> float:
-        return ymax(v, material, q, self.t_death - self.Ta)
-
-    @staticmethod
-    def deflection_model(v: float, c_defl: float) -> float:
-        return 10 * np.exp(-c_defl / v)
-
-    def find_optimal_velocity(self, material: MaterialProperties, c_defl: float, q: float):
-        res = minimize_scalar(self.cost_function, bounds=[self.vmin, self.vmax], method='bounded', args=(material, c_defl, q))
+    def find_optimal_velocity(self, material: MaterialProperties,
+                              c_defl: float,
+                              q: float,
+                              vstar: float):
+        """
+        Minimize the cost function to find the optimal velocity
+        :param material: material properties
+        :param c_defl: deflection rate [mm/s]
+        :param q: power [W]
+        :param vstar: desired velocity [mm/s]
+        """
+        res = minimize_scalar(self.cost_function, bounds=[self.vmin, self.vmax], method='bounded', args=(material, c_defl, q, vstar))
         self._u0 = res.x
         return self._u0
 

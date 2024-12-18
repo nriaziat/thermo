@@ -1,13 +1,12 @@
 import cv2
 import do_mpc.controller
+from helper_code.aruco_tracker import ArucoTracker
 from T3pro import T3pro
-from models import humanTissue, hydrogelPhantom
-from testbed import Testbed
+from testbed import Testbed, TestbedState
 from ParameterEstimation import *
 from utils import *
 from Plotters import *
-from enum import StrEnum
-import pandas as pd
+from DataLogger import DataLogger
 import warnings
 from typing import Optional
 from dataclasses import dataclass
@@ -15,6 +14,9 @@ import tqdm
 from tkinter import messagebox
 from datetime import datetime
 from copy import deepcopy
+import pygame
+from enum import Enum, auto, StrEnum
+
 warnings.filterwarnings("ignore")
 
 # Define constants
@@ -28,10 +30,24 @@ DEFLECTION_MAX = 10
 TIME_STEP = 1 / 24
 N_STEPS = 1000
 
+# ExperimentType = StrEnum('ExperimentType', 'REAL PRERECORDED SIMULATED')
 class ExperimentType(StrEnum):
-    REAL = "r"
-    PRERECORDED = "p"
-    SIMULATED = "s"
+    REAL = 'REAL'
+    PRERECORDED = "PRERECORDED"
+    SIMULATED = "SIMULATED"
+
+# ControlMode = StrEnum('ControlMode', 'AUTONOMOUS CONSTANT_VELOCITY TELEOPERATED SHARED_CONTROL')
+class ControlMode(StrEnum):
+    AUTONOMOUS = 'AUTONOMOUS'
+    CONSTANT_VELOCITY = 'CONSTANT_VELOCITY'
+    TELEOPERATED = 'TELEOPERATED'
+    SHARED_CONTROL = 'SHARED_CONTROL'
+
+@dataclass(frozen=True)
+class Devices:
+    t3: T3pro
+    testbed: Testbed
+    joystick: pygame.joystick.Joystick
 
 @dataclass(frozen=True)
 class Parameters:
@@ -48,6 +64,7 @@ class Parameters:
 @dataclass(frozen=True)
 class RunConfig:
     exp_type: ExperimentType
+    control_mode: ControlMode
     adaptive_velocity: bool
     constant_velocity: float
     log_save_dir: str
@@ -57,30 +74,17 @@ class RunConfig:
     plot_adaptive_params: bool
     material: MaterialProperties
 
-class DataLogger:
-    def __init__(self, log_save_dir: str, adaptive_velocity: bool, constant_velocity: float):
-        self.log_save_dir = log_save_dir
-        self.adaptive_velocity = adaptive_velocity
-        self.constant_velocity = constant_velocity
-        self.data_log = pd.DataFrame(
-            columns=['time_sec', 'position_mm', 'widths_mm', 'velocities', 'deflections_mm', 'thermal_frames', 'deflection_estimates', 'thermal_estimates']
-        )
-        self.start_time = datetime.now()
+@dataclass
+class PlotConfig:
+    run_conf: RunConfig
+    plotter: GenericPlotter
+    w_mm: float
+    defl_mm: float
+    u0: float
+    deflection_plotter: Optional[AdaptiveParameterPlotter]
+    thermal_plotter: Optional[AdaptiveParameterPlotter]
+    defl_hist_mm: Optional[list]
 
-    def log_data(self, pos, w_mm, u0, defl_mm, thermal_arr, defl_adaptation, therm_adaptation):
-        dt = (datetime.now() - self.start_time).total_seconds()
-        self.data_log.loc[len(self.data_log)] = [
-            dt, pos, w_mm, u0, defl_mm, thermal_arr,
-            {'c_defl': defl_adaptation.c_defl},
-            {'q': therm_adaptation.q, 'Cp': therm_adaptation.Cp}
-        ]
-
-    def save_log(self):
-        if len(self.data_log['widths_mm']) > 0 and self.log_save_dir != "":
-            date = datetime.now()
-            mode = "adaptive" if self.adaptive_velocity else f"{self.constant_velocity:.0f}mm_s"
-            fname = f"{self.log_save_dir}/data_{mode}_{date.strftime('%Y-%m-%d-%H:%M')}.pkl"
-            self.data_log.to_pickle(fname)
 
 def update_kf(model, material: MaterialProperties, defl_adaptation: DeflectionAdaptation, therm_adaptation: ThermalAdaptation,
               tip_mm: np.ndarray, w_mm: float, u0: float):
@@ -113,7 +117,10 @@ def update(run_conf: RunConfig,
            tip_candidates_px: list[np.ndarray],
            defl_adaptation: DeflectionAdaptation,
            therm_adaptation: ThermalAdaptation,
-           u0: float, frame: np.ndarray, init_mpc: bool, mpc: Optional[do_mpc.controller.MPC]):
+           u0: float, frame: np.ndarray,
+           vstar: float,
+           init_mpc: bool,
+           mpc: Optional[do_mpc.controller.MPC]):
     """
     Update velocity and adaptive parameters
     :param run_conf: Running parameters
@@ -124,6 +131,7 @@ def update(run_conf: RunConfig,
     :param defl_adaptation: Deflection adaptation object
     :param therm_adaptation: Thermal adaptation object
     :param u0: Current velocity
+    :param vstar: Desired velocity
     :param frame: Thermal frame
     :param init_mpc: MPC initialization flag
     :param mpc: Optional MPC object
@@ -144,7 +152,12 @@ def update(run_conf: RunConfig,
     tip_lead_distance = 0
     w_px, ellipse = cv_isotherm_width(frame, model.t_death)
     w_mm = w_px / params.thermal_px_per_mm
-    update_kf(model, material, defl_adaptation, therm_adaptation, tip_mm, w_mm, u0)
+    if u0 > 0:
+        update_kf(model, material, defl_adaptation, therm_adaptation, tip_mm, w_mm, u0)
+    else:
+        if tip_mm is None:
+            return u0, 0, w_mm, init_mpc, tip_candidates_px
+        return u0, np.linalg.norm(tip_mm - defl_adaptation.neutral_tip_mm), w_mm, init_mpc, tip_candidates_px
     if not init_mpc and run_conf.mpc:
         mpc.x0['width_0'] = w_mm
         mpc.x0['tip_lead_dist'] = tip_lead_distance
@@ -153,7 +166,7 @@ def update(run_conf: RunConfig,
     if run_conf.mpc:
         u0 = mpc.make_step(np.array([w_mm, tip_lead_distance])).item()
     else:
-        u0 = model.find_optimal_velocity(material, defl_adaptation.c_defl, therm_adaptation.q)
+        u0 = model.find_optimal_velocity(material, defl_adaptation.c_defl, therm_adaptation.q, vstar)
     return u0, defl_adaptation.defl_mm, therm_adaptation.w_mm, init_mpc, tip_candidates_px
 
 def setup_mpc(model, mpc, defl_adapt, therm_adapt, r, params: Parameters):
@@ -179,18 +192,14 @@ def setup_mpc(model, mpc, defl_adapt, therm_adapt, r, params: Parameters):
 
 def main(model,
          run_conf: RunConfig,
-         mpc: Optional[do_mpc.controller.MPC] = None,
-         t3: Optional[T3pro] = None,
-         tb: Optional[Testbed] = None,
-         r: float = 1e-3) -> None:
+         devices: Devices,
+         mpc: Optional[do_mpc.controller.MPC] = None) -> None:
     """
     Main function to run the experiment
     :param model: Model object
     :param run_conf: Running parameters
+    :param devices: Devices object
     :param mpc: Optional MPC object
-    :param t3: T3pro object
-    :param tb: Testbed object
-    :param r: Input change penalty
     """
     params = Parameters()
     if run_conf.mpc:
@@ -209,7 +218,7 @@ def main(model,
     #############################
 
     if run_conf.mpc:
-        plotter = setup_mpc(model, mpc, deflection_adaptation, thermal_adaptation, r, params)
+        plotter = setup_mpc(model, mpc, deflection_adaptation, thermal_adaptation, 0.1, params)
     else:
         plotter = GenericPlotter(n_plots=3,
                                  labels=['Widths', 'Velocities', 'Deflections'],
@@ -227,61 +236,60 @@ def main(model,
     model.vmin = params.v_min
     model.vmax = params.v_max
 
-    if run_conf.exp_type == ExperimentType.PRERECORDED:
-        prerecorded_experiment(run_conf, model, material, plotter, mpc, params, deflection_adaptation, thermal_adaptation, deflection_plotter, thermal_plotter)
+    plotconfig = PlotConfig(run_conf, plotter, 0, 0, 0, deflection_plotter, thermal_plotter, None)
 
-    elif run_conf.exp_type == ExperimentType.SIMULATED:
-        simulated_experiment(run_conf, model, material, plotter, mpc, params, deflection_adaptation, thermal_adaptation, deflection_plotter, thermal_plotter)
+    if run_conf.exp_type is ExperimentType.PRERECORDED:
+        prerecorded_experiment(run_conf, plotconfig, model, material, mpc, params, deflection_adaptation, thermal_adaptation)
 
-    elif run_conf.exp_type == ExperimentType.REAL:
-        real_experiment(run_conf, model, material, tb, t3, plotter, mpc, params, deflection_adaptation, thermal_adaptation, deflection_plotter, thermal_plotter)
+    elif run_conf.exp_type is ExperimentType.SIMULATED:
+        simulated_experiment(run_conf, plotconfig, model, material, mpc, params, deflection_adaptation, thermal_adaptation)
+
+    elif run_conf.exp_type is ExperimentType.REAL:
+        real_experiment(run_conf, plotconfig, model, material, devices, mpc, params, deflection_adaptation, thermal_adaptation)
 
     plt.show()
-    if tb is not None:
-        tb.stop()
-    if t3 is not None:
-        t3.release()
+    for device in devices.__dict__.values():
+        if hasattr(device, 'close'):
+            device.close()
     cv2.destroyAllWindows()
 
 
-def plot(run_conf: RunConfig, plotter: GenericPlotter | MPCPlotter, w_mm: float, defl_mm: float, u0: float,
-         deflection_plotter:Optional[AdaptiveParameterPlotter]=None, thermal_plotter:Optional[AdaptiveParameterPlotter]=None,
-         defl_hist_mm: Optional[list] = None) -> bool:
+def plot(plotconfig: PlotConfig) -> bool:
     """
-    :param run_conf: Running parameters
-    :param plotter: Plotter object
-    :param w_mm: Width [mm]
-    :param defl_mm: Deflection [mm]
-    :param u0: Velocity [mm/s]
-    :param deflection_plotter: Deflection plotter object
-    :param thermal_plotter: Thermal plotter object
-    :param defl_hist_mm: Deflection history [mm] (Optional)
+    :param plotconfig: Plot configuration
     """
-    if run_conf.mpc:
-        plotter.plot()
+    if plotconfig.run_conf.mpc:
+        plotconfig.plotter.plot()
     else:
-        plotter.plot([w_mm, u0, defl_mm], defl_hist=defl_hist_mm)
-    if deflection_plotter is not None:
-        deflection_plotter.plot()
-    if thermal_plotter is not None:
-        thermal_plotter.plot()
-    fignums = [p.fig.number for p in [plotter, deflection_plotter, thermal_plotter] if p is not None]
+        plotconfig.plotter.plot([plotconfig.w_mm,
+                                 plotconfig.u0, plotconfig.defl_mm])
+    if plotconfig.deflection_plotter is not None:
+        plotconfig.deflection_plotter.plot()
+    if plotconfig.thermal_plotter is not None:
+        plotconfig.thermal_plotter.plot()
+    fignums = [p.fig.number for p in [plotconfig.plotter, plotconfig.deflection_plotter, plotconfig.thermal_plotter] if p is not None]
     if not all([plt.fignum_exists(f) for f in fignums]):
         return False
     return True
 
 
-def real_experiment(run_conf: RunConfig, model, material: MaterialProperties, tb, t3, plotter, mpc,
+def real_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
+                    model, material: MaterialProperties, devices, mpc,
                     params: Parameters,
                     defl_adaptation: DeflectionAdaptation,
-                    therm_adaptation: ThermalAdaptation,
-                    deflection_plotter, thermal_plotter):
+                    therm_adaptation: ThermalAdaptation):
     """
     Run the real experiment
     """
+    tb = devices.testbed
+    t3 = devices.t3
+    joy = devices.joystick
 
     u0 = (params.v_min + params.v_max) / 2
     data_logger = DataLogger(run_conf.log_save_dir, run_conf.adaptive_velocity, run_conf.constant_velocity)
+    aruco_cam = cv2.VideoCapture(0)
+    aruco_tracker = ArucoTracker()
+    aruco_tag_width_mm = 8
 
     if run_conf.home:
         tb.home()
@@ -297,46 +305,97 @@ def real_experiment(run_conf: RunConfig, model, material: MaterialProperties, tb
         return
     tip_neutral_px = []
     time0 = datetime.now()
+    vstar = 0
     while ret:
+        ret, aruco_frame = aruco_cam.read()
+        aruco_pos, ids = aruco_tracker.detect(aruco_frame)
+        if ids is not None:
+            aruco_tag_width_px = np.linalg.norm(aruco_pos[0][0][0] - aruco_pos[0][0][1])
+            aruco_position = (aruco_pos[0][0][0] * aruco_tag_width_mm / aruco_tag_width_px)
+        else:
+            aruco_position = None
         ret, raw_frame = t3.read()
         info, lut = t3.info()
+        pos = tb.pos
         thermal_arr = lut[raw_frame]
         color_frame = thermal_frame_to_color(thermal_arr)
+        if run_conf.control_mode is ControlMode.AUTONOMOUS:
+            vstar = 7
+        elif run_conf.control_mode is ControlMode.CONSTANT_VELOCITY:
+            vstar = run_conf.constant_velocity
+        elif run_conf.control_mode is ControlMode.SHARED_CONTROL or run_conf.control_mode is ControlMode.TELEOPERATED:
+            pygame.event.get()
+            if joy.get_button(0):
+                vstar += 2 * ((joy.get_axis(5) + 1) / 2 - (joy.get_axis(2) + 1) / 2) - 0.05 * vstar
+                vstar = np.clip(vstar, params.v_min, params.v_max)
+            else:
+                vstar = 0
+            if joy.get_button(1):
+                break
 
-        u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(run_conf, params, model, material,
-                                                             tip_neutral_px, defl_adaptation, therm_adaptation, u0, thermal_arr, init_mpc, mpc)
+        try:
+            u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(run_conf, params, model, material,
+                                                                 tip_neutral_px, defl_adaptation,
+                                                                 therm_adaptation, u0, thermal_arr,
+                                                                 init_mpc=init_mpc, mpc=mpc, vstar=vstar)
+        except ValueError:
+            print("Covariance error, ending.")
+            break
+
         new_tip_pos = defl_adaptation.kf.x[:2] * params.thermal_px_per_mm
         neutral_tip_pos = defl_adaptation.neutral_tip_mm * params.thermal_px_per_mm
-        color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos,  neutral_tip_pos)
+        color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos, neutral_tip_pos)
+        pltconfig.w_mm = w_mm
+        pltconfig.defl_mm = defl_mm
+        if len(data_logger.data_log) > 0:
+            if data_logger.data_log["aruco_pos_mm"][0] is not None:
+                defl_aruco = np.linalg.norm(aruco_position - data_logger.data_log['aruco_pos_mm'][0]) if aruco_position is not None else 0
+            else:
+                defl_aruco = 0
+        else:
+            defl_aruco = 0
+        if defl_aruco > params.deflection_max:
+            messagebox.showerror("Error", "Plastic Deformation, stopping the experiment")
+            break
+        # elif defl_mm > 0.8 * params.deflection_max:
+        #     u0 = u0 - 2 * (defl_mm - (0.8 * params.deflection_max / 2))
+        #     u0 = np.clip(u0, -params.v_max, params.v_max)
+
+
         cv.imshow("Frame", color_frame)
-        if not run_conf.adaptive_velocity:
+
+        if vstar < 0.1:
+            u0 = 0
+        elif run_conf.control_mode is ControlMode.CONSTANT_VELOCITY:
             u0 = run_conf.constant_velocity
-        if not plot(run_conf, plotter, w_mm, defl_mm, u0, deflection_plotter, thermal_plotter, defl_hist_mm=defl_adaptation.defl_hist_mm):
-            break
-        if defl_mm > params.deflection_max:
-            messagebox.showerror("Error", "Deflection too high, stopping the experiment")
+        elif run_conf.control_mode is ControlMode.TELEOPERATED:
+            u0 = vstar
+
+        data_logger.log_data(pos, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation,
+                             aruco_position)
+
+        pltconfig.u0 = u0
+        if not plot(pltconfig):
             break
 
-
-        tb.set_speed(u0)
-        pos = tb.get_position()
+        ret = tb.set_speed(u0)
+        if ret is TestbedState.HOMED or ret is TestbedState.RIGHT:
+            break
         dt = (datetime.now() - time0).total_seconds()
-        data_logger.log_data(pos, w_mm, u0, defl_mm, thermal_arr, defl_adaptation, therm_adaptation)
         if cv.waitKey(1) & 0xFF == ord('q') or pos == -1:
             break
 
     tb.set_speed(0)
-    # data_logger.data_log['deflections_mm'] = defl_adaptation.defl_hist_mm
     # update deflections with final neutral tip position
     print(f"Total time: {dt:.2f} seconds")
     print(f"7mm/s equivalent time: {pos / 7:.2f} seconds")
     data_logger.save_log()
 
-def simulated_experiment(run_conf: RunConfig, model, material, plotter, mpc,
+def simulated_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
+                         model, material, mpc,
                          params: Parameters,
                          deflection_adaptation: DeflectionAdaptation,
-                         thermal_adaptation: ThermalAdaptation,
-                         deflection_plotter, thermal_plotter):
+                         thermal_adaptation: ThermalAdaptation):
     simulator = do_mpc.simulator.Simulator(model)
     simulator.set_param(t_step=params.time_step, integration_tool='idas')
     sim_tvp = simulator.get_tvp_template()
@@ -365,17 +424,20 @@ def simulated_experiment(run_conf: RunConfig, model, material, plotter, mpc,
         thermal_adaptation.update(x0.item(), u_prime.item())
         model.deflection_mm = defl_mm
         x0 = simulator.make_step(u0)
-        if not plot(run_conf, plotter, x0, defl_mm, u0, deflection_plotter, thermal_plotter):
+        pltconfig.w_mm = x0.item()
+        pltconfig.defl_mm = defl_mm
+        pltconfig.u0 = u0.item()
+        if not plot(pltconfig):
             break
-        deflection_plotter.plot()
-        thermal_plotter.plot()
+        pltconfig.deflection_plotter.plot()
+        pltconfig.thermal_plotter.plot()
         plt.pause(0.0001)
 
-def prerecorded_experiment(run_conf: RunConfig, model, material: MaterialProperties, plotter, mpc,
+def prerecorded_experiment(run_conf: RunConfig, pltconfig: PlotConfig,
+                           model, material: MaterialProperties, mpc,
                            params: Parameters,
                            defl_adaptation: DeflectionAdaptation,
-                           therm_adaptation: ThermalAdaptation,
-                           deflection_plotter, thermal_plotter):
+                           therm_adaptation: ThermalAdaptation):
 
     with open(run_conf.log_file_to_load, 'rb') as f:
         data = pkl.load(f)
@@ -389,6 +451,10 @@ def prerecorded_experiment(run_conf: RunConfig, model, material: MaterialPropert
             bs = data['damping_estimates']
         except KeyError:
             bs = data['deflection_estimates']
+        try:
+            vstars = data['vstars']
+        except KeyError:
+            vstars = [None] * len(thermal_frames)
         vs = data['velocities']
 
     init_mpc = False
@@ -396,14 +462,18 @@ def prerecorded_experiment(run_conf: RunConfig, model, material: MaterialPropert
     defl_covs = []
     defls = []
     fill = None
-    for i, (frame, b, v) in enumerate(zip(tqdm.tqdm(thermal_frames), bs, vs)):
+    for i, (frame, b, v, vstar) in enumerate(zip(tqdm.tqdm(thermal_frames), bs, vs, vstars)):
         color_frame = thermal_frame_to_color(frame)
-        u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(run_conf, params, model, material, tip_neutral_px, defl_adaptation, therm_adaptation, v,
+        vstar = 7 if vstar is None else vstar
+        u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(run_conf, params, model, material, tip_neutral_px, defl_adaptation, therm_adaptation, v, vstar,
                                                              frame, init_mpc, mpc)
         new_tip_pos = defl_adaptation.kf.x[:2] * params.thermal_px_per_mm
         color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos, defl_adaptation.neutral_tip_mm * params.thermal_px_per_mm)
         cv.imshow("Frame", color_frame)
-        if not plot(run_conf, plotter, w_mm, defl_mm, u0, deflection_plotter, thermal_plotter, defl_hist_mm=defl_adaptation.defl_hist_mm):
+        pltconfig.w_mm = w_mm
+        pltconfig.defl_mm = defl_mm
+        pltconfig.u0 = u0
+        if not plot(pltconfig):
             break
         defl_covs.append(3 * defl_adaptation.defl_std)
         defls.append(defl_mm)

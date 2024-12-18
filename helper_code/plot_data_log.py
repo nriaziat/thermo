@@ -5,8 +5,22 @@ import numpy as np
 from utils import LoggingData, find_wavefront_distance, cv_isotherm_width, find_tooltip
 from os import PathLike, listdir
 from matplotlib import rcParams
-from scipy.stats import ttest_rel, ranksums
+from scipy.stats import ttest_ind, ranksums
+import seaborn as sns
 import pandas as pd
+import statannot
+sns.set_style("white")
+
+def convert_pvalue_to_asterisks(pvalue):
+    if pvalue <= 0.0001:
+        return "****"
+    elif pvalue <= 0.001:
+        return "***"
+    elif pvalue <= 0.01:
+        return "**"
+    elif pvalue <= 0.05:
+        return "*"
+    return "ns"
 
 rcParams['text.usetex'] = True
 rcParams["font.family"] = "Times New Roman"
@@ -223,15 +237,16 @@ def wavefront_dist_vs_deflection(file: str | PathLike):
     return list(wavefront_dists), defls
 
 use_position = True
-dir = "../logs/experiments_11_8_2024/"
+dirs = "../logs/3mm_step/", "../logs/3mm_const_vel_tuning/", "../logs/3mm_thick_step/", "../logs/2mm_thick_step/"
 fnames = []
 ax = None
-summary = pd.DataFrame(columns=["widths_mm", "deflections_mm", "time", "exp_type"])
+summary = pd.DataFrame(columns=["widths_mm", "deflections_mm", "time", "exp_type", "mean_speed", 'success', "Step Size (mm)"])
 if len(fnames) == 0:
-    fnames = os.listdir(dir)
-    fnames = [f for f in fnames if f.endswith(".pkl") and f.startswith("data")]
+    fnames = []
+    for dir in dirs:
+        fnames += [dir + f for f in listdir(dir) if f.endswith(".pkl") and f.startswith("data")]
 for file in fnames:
-    with open(dir + file, "rb") as f:
+    with open(file, "rb") as f:
         df: pd.DataFrame = pkl.load(f)
     thermal_params = df["thermal_estimates"][0].keys()
     for param in thermal_params:
@@ -239,23 +254,49 @@ for file in fnames:
     deflection_params = df["deflection_estimates"][0].keys()
     for param in deflection_params:
         df[param] = df["deflection_estimates"].apply(lambda x: x[param])
-    df.plot(subplots=True, kind='line', y=["Cp", "c_defl", "q"], x="position_mm")
-    plt.show()
+    # df.plot(subplots=True, kind='line', y=["deflections_mm", "c_defl"])
+    # plt.show()
     # df["position_mm"] = np.cumsum(df["velocities"] * 1 / 24)
     # df.drop(columns=["thermal_frames"], inplace=True)
     # print(df["position_mm"].max())
-    success = df["position_mm"].max() > 100
-    if not success:
-        print(f"Experiment {file} did not complete succesfully.")
-    summary.loc[-1] = [df["widths_mm"].max(), df["deflections_mm"].max(), df["time_sec"].max(),
-                       "adaptive" if "adaptive" in file else "constant"]
+    success = df["position_mm"].max() > 200 or "adaptive" in file and df["deflections_mm"].max() < 10
+    exp_type = "adaptive" if "adaptive" in file else "constant"
+    step_size = float(file.split("step")[0].split("mm")[0].split("/")[2].split("_")[-1])
+    mean_speed = df["velocities"].mean() if exp_type == "adaptive" else float(file.split("/")[-1].split("_")[1].split("mm")[0])
+    summary.loc[-1] = [df["widths_mm"].mean(), df["deflections_mm"].mean(), df["time_sec"].max(),
+                       exp_type, mean_speed, success, step_size]
     summary.index = summary.index + 1
 
+width_res = ttest_ind(summary[summary["exp_type"] == "adaptive"]["widths_mm"], summary[summary["exp_type"] == "constant"]["widths_mm"])
+defl_res = ttest_ind(summary[summary["exp_type"] == "adaptive"]["deflections_mm"], summary[summary["exp_type"] == "constant"]["deflections_mm"])
+print(f"Widths: {width_res}")
+print(f"Deflections: {defl_res}")
 # summary.set_index("exp_type", inplace=True)
+fig, ax = plt.subplots(1, 2)
+summary.rename(columns={"widths_mm": "Width (mm)", "deflections_mm": "Deflection (mm)",
+                        "time": "Time (s)", "success": "Success",
+                        "exp_type": "Experiment Type"}, inplace=True)
+# summary.plot(subplots=True, ax=ax, kind='box', by="exp_type", column=["Width (mm)", "Deflection (mm)"])
+sns.boxplot(data=summary, x="Experiment Type", y="Width (mm)", ax=ax[0], showfliers=False, width=0.2)
+sns.boxplot(data=summary, x="Experiment Type", y="Deflection (mm)", ax=ax[1], showfliers=False, width=0.2)
+sns.scatterplot(data=summary, x="Experiment Type", y="Width (mm)", ax=ax[0], style="Success",
+                hue="Step Size (mm)", palette="vlag", style_order=[True, False], legend=False)
+sns.scatterplot(data=summary, x="Experiment Type", y="Deflection (mm)", ax=ax[1], style="Success",
+                hue="Step Size (mm)", palette="vlag", style_order=[True, False], legend=True)
+for dots in ax[0].collections:
+    offsets = dots.get_offsets()
+    jittered_offsets = offsets + np.random.normal(0, 0.02, offsets.shape)
+    dots.set_offsets(jittered_offsets)
+for dots in ax[1].collections:
+    offsets = dots.get_offsets()
+    jittered_offsets = offsets + np.random.normal(0, 0.02, offsets.shape)
+    dots.set_offsets(jittered_offsets)
 
-summary.plot(subplots=True, ax=ax, kind='box', by="exp_type", column=["widths_mm", "deflections_mm"])
+statannot.add_stat_annotation(ax[0], data=summary, x="Experiment Type", y="Width (mm)", box_pairs=[("adaptive", "constant")],
+                                test="t-test_ind", text_format="star", loc="inside", verbose=2)
+statannot.add_stat_annotation(ax[1], data=summary, x="Experiment Type", y="Deflection (mm)", box_pairs=[("adaptive", "constant")],
+                                test="t-test_ind", text_format="star", loc="inside", verbose=2)
 plt.show()
-summary
 
 
 # plot_log_dir(list_of_files=fnames,
