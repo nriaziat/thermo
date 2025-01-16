@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from copy import deepcopy
 import pygame
 from enum import StrEnum
+from models import SteadyStateMinimizationModel, humanTissue, hydrogelPhantom
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose, Twist # for position and velocity of ASTR
@@ -53,20 +54,8 @@ class Parameters:
 class RunConfig:
     control_mode: ControlMode
     adaptive_velocity: bool
-    constant_velocity: float
     log_save_dir: str
-    log_file_to_load: str
-    home: bool
-    plot_adaptive_params: bool
     material: MaterialProperties
-
-@dataclass
-class PlotConfig:
-    run_conf: RunConfig
-    w_mm: float
-    defl_mm: float
-    u0: float
-    defl_hist_mm: Optional[list]
 
 class SpeedPublisher(Node):
     def __init__(self):
@@ -267,7 +256,7 @@ def loop(run_conf: RunConfig,
     joy = devices.joystick
 
     u0 = (params.v_min + params.v_max) / 2
-    data_logger = DataLogger(run_conf.log_save_dir, run_conf.adaptive_velocity, run_conf.constant_velocity)
+    data_logger = DataLogger(run_conf.log_save_dir, run_conf.adaptive_velocity, None)
 
     ret, raw_frame = t3.read()
     info, lut = t3.info()
@@ -283,8 +272,6 @@ def loop(run_conf: RunConfig,
         color_frame = thermal_frame_to_color(thermal_arr)
         if run_conf.control_mode is ControlMode.AUTONOMOUS:
             vstar = 7
-        elif run_conf.control_mode is ControlMode.CONSTANT_VELOCITY:
-            vstar = run_conf.constant_velocity
         elif run_conf.control_mode is ControlMode.SHARED_CONTROL or run_conf.control_mode is ControlMode.TELEOPERATED:
             pygame.event.get()
             if joy.get_button(0):
@@ -316,8 +303,6 @@ def loop(run_conf: RunConfig,
 
         if vstar < 0.1:
             u0 = 0
-        elif run_conf.control_mode is ControlMode.CONSTANT_VELOCITY:
-            u0 = run_conf.constant_velocity
         elif run_conf.control_mode is ControlMode.TELEOPERATED:
             u0 = vstar
 
@@ -339,3 +324,17 @@ def loop(run_conf: RunConfig,
     speed_publisher.set_speed(0)
     speed_publisher.publish_speed()
     data_logger.save_log()
+
+if __name__ == '__main__':
+    t3 = T3pro(port=4)
+    model = SteadyStateMinimizationModel(qw=1, qd=1, r=1)
+    devices = Devices(t3, None)
+    material = hydrogelPhantom
+    run_conf = RunConfig(
+        control_mode=ControlMode.AUTONOMOUS,
+        adaptive_velocity=True,
+        constant_velocity=None,
+        log_save_dir='./logs',
+        material=material,
+    )
+    main()
