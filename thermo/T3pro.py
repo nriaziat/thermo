@@ -3,7 +3,6 @@ import numpy as np
 from datetime import datetime
 import math
 from dataclasses import dataclass, fields
-import cv2 as cv
 
 debug = 0
 
@@ -307,7 +306,7 @@ class T3pro:
     def calibrate(self):
         self.cap.set(cv2.CAP_PROP_ZOOM, 0x8000)
 
-    def info(self) -> tuple[Info, np.ndarray[float]]:
+    def info(self) -> tuple[Info, np.ndarray]:
         width, height = self.frame.shape
         return info(self.meta, self.device_strings, height, width)
 
@@ -332,8 +331,8 @@ class T3pro:
             self.frame_raw = frame_raw
             if self.mtx is not None:
                 h, w = frame.shape[:2]
-                newcameramtx, roi = cv.getOptimalNewCameraMatrix(self.mtx, self.dist, (w, h), 1, (w, h))
-                frame = cv.undistort(frame, self.mtx, self.dist, None, newcameramtx)
+                newcameramtx, roi = cv2.getOptimalNewCameraMatrix(self.mtx, self.dist, (w, h), 1, (w, h))
+                frame = cv2.undistort(frame, self.mtx, self.dist, None, newcameramtx)
                 x, y, w, h = roi
                 self.frame = frame[y:y + h, x:x + w]
             else:

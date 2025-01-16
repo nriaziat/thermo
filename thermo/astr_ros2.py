@@ -1,15 +1,15 @@
 import cv2
-from T3pro import T3pro
-from ParameterEstimation import *
-from utils import *
-from DataLogger import DataLogger
+from .T3pro import T3pro
+from .ParameterEstimation import *
+from .utils import *
+from .DataLogger import DataLogger
 import warnings
 from typing import Optional
 from dataclasses import dataclass
 from copy import deepcopy
 import pygame
-from enum import StrEnum
-from models import SteadyStateMinimizationModel, humanTissue, hydrogelPhantom
+from enum import Enum
+from thermo.models import SteadyStateMinimizationModel, humanTissue, hydrogelPhantom
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose, Twist # for position and velocity of ASTR
@@ -28,7 +28,7 @@ FRAME_SIZE_PX = (384, 288)
 DEFLECTION_MAX = 10
 TIME_STEP = 1 / 24
 
-class ControlMode(StrEnum):
+class ControlMode(str, Enum):
     AUTONOMOUS = 'AUTONOMOUS'
     CONSTANT_VELOCITY = 'CONSTANT_VELOCITY'
     TELEOPERATED = 'TELEOPERATED'
@@ -325,16 +325,3 @@ def loop(run_conf: RunConfig,
     speed_publisher.publish_speed()
     data_logger.save_log()
 
-if __name__ == '__main__':
-    t3 = T3pro(port=4)
-    model = SteadyStateMinimizationModel(qw=1, qd=1, r=1)
-    devices = Devices(t3, None)
-    material = hydrogelPhantom
-    run_conf = RunConfig(
-        control_mode=ControlMode.AUTONOMOUS,
-        adaptive_velocity=True,
-        constant_velocity=None,
-        log_save_dir='./logs',
-        material=material,
-    )
-    main()

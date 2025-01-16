@@ -1,7 +1,7 @@
-from Kalman import UKFIdentification
+from .Kalman import UKFIdentification
 from filterpy.common import Q_discrete_white_noise
 import numpy as np
-from models import MaterialProperties, isotherm_width_model, cut_force_model
+from thermo.models import MaterialProperties, isotherm_width_model, cut_force_model
 
 class DeflectionAdaptation(UKFIdentification):
     def __init__(self, w0: np.array,

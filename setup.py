@@ -2,7 +2,7 @@ from setuptools import setup
 import os
 from glob import glob
 
-package_name = 'thermal_feedback_testbed'
+package_name = 'thermo'
 
 setup(
  name=package_name,
@@ -24,7 +24,7 @@ setup(
  tests_require=['pytest'],
  entry_points={
      'console_scripts': [
-             'node = thermal_feedback_testbed.node:main'
+             'node = thermo.node:main'
      ],
    },
 )
