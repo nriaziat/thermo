@@ -10,11 +10,14 @@ from copy import deepcopy
 import pygame
 from enum import Enum
 from thermo.models import SteadyStateMinimizationModel, humanTissue, hydrogelPhantom
+from thermo.Trajectory import Trajectory
+from scipy.spatial.transform import Rotation as R
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Pose, Twist # for position and velocity of ASTR
 from std_msgs.msg import Float32  # for speed
 from sensor_msgs.msg import Image  # for thermal image
+from astr_msgs.msg import AstrCartesianCommand, AstrFeedback, AstrCartesianMotionMode
 
 warnings.filterwarnings("ignore")
 
@@ -57,39 +60,41 @@ class RunConfig:
     log_save_dir: str
     material: MaterialProperties
 
-class SpeedPublisher(Node):
+class AstrCartesianCommandPublisher(Node):
     def __init__(self):
-        super().__init__('speed_publisher')
-        self.publisher_ = self.create_publisher(Float32, 'speed', 10)
-        self.speed = 0
+        super().__init__('cartesian_command_publisher')
+        self.publisher_ = self.create_publisher(AstrCartesianCommand, 'cartesian_command', 10)
+        self.command = AstrCartesianCommand()
 
-    def set_speed(self, speed):
-        self.speed = speed
+    def set_command(self, position: list, orientation: list, velocity: float):
+        self.command.target_pose = Pose()
+        self.command.target_pose.position.x = position[0]
+        self.command.target_pose.position.y = position[1]
+        self.command.target_pose.position.z = position[2]
+        self.command.target_pose.orientation.x = orientation[0]
+        self.command.target_pose.orientation.y = orientation[1]
+        self.command.target_pose.orientation.z = orientation[2]
+        self.command.target_pose.orientation.w = orientation[3]
+        self.command.motion_mode.mode_enum = AstrCartesianMotionMode.CUSTOM
+        self.command.motion_mode.requested_lin_vel_m_s = velocity
+        self.command.motion_mode.requested_ang_vel_deg_s = 0
 
-    def publish_speed(self):
-        msg = Float32()
-        msg.data = self.speed
-        self.publisher_.publish(msg)
+    def publish_command(self):
+        self.publisher_.publish(self.command)
 
-class PositionSubscriber(Node):
+class FeedbackSubscriber(Node):
     def __init__(self):
-        super().__init__('position_subscriber')
-        self.subscription = self.create_subscription(Pose, 'position', self.listener_callback, 10)
+        super().__init__('feedback_subscriber')
+        self.subscription = self.create_subscription(AstrFeedback, 'feedback', self.listener_callback, 10)
         self.subscription  # prevent unused variable warning
-        self.position = np.array([0, 0])
+        self.position = np.array([0, 0, 0])
+        self.orientation = np.array([0, 0, 0, 0])
+        self.twist = np.array([0, 0, 0])
 
-    def listener_callback(self, msg):
-        self.position = np.array([msg.position.x, msg.position.y])
-
-class TwistSubscriber(Node):
-    def __init__(self):
-        super().__init__('twist_subscriber')
-        self.subscription = self.create_subscription(Twist, 'twist', self.listener_callback, 10)
-        self.subscription  # prevent unused variable warning
-        self.twist = np.array([0, 0])
-
-    def listener_callback(self, msg):
-        self.twist = np.array([msg.linear.x, msg.linear.y, msg.linear.z])
+    def listener_callback(self, msg: AstrFeedback):
+        self.orientation = np.array([msg.actual_cartesian_position.orientation.x, msg.actual_cartesian_position.orientation.y, msg.actual_cartesian_position.orientation.z, msg.actual_cartesian_position.orientation.w])
+        self.position = np.array([msg.actual_cartesian_position.position.x, msg.actual_cartesian_position.position.y, msg.actual_cartesian_position.position.z])
+        self.twist = np.array([msg.actual_cartesian_velocity.linear.x, msg.actual_cartesian_velocity.linear.y, msg.actual_cartesian_velocity.linear.z])
 
 class ColorImagePublisher(Node):
     def __init__(self):
@@ -216,9 +221,8 @@ def main(model,
     #############################
 
     rclpy.init()
-    speed_publisher = SpeedPublisher()
-    position_subscriber = PositionSubscriber()
-    twist_subscriber = TwistSubscriber()
+    astr_sub = FeedbackSubscriber()
+    astr_pub = AstrCartesianCommandPublisher()
     color_image_publisher = ColorImagePublisher()
     thermal_image_publisher = ThermalImagePublisher()
 
@@ -226,15 +230,14 @@ def main(model,
     model.vmax = params.v_max
 
     loop(run_conf, model, material, devices, params, deflection_adaptation, thermal_adaptation,
-         speed_publisher, position_subscriber, twist_subscriber,
-            color_image_publisher, thermal_image_publisher)
+        astr_sub, astr_pub,
+        color_image_publisher, thermal_image_publisher)
 
     for device in devices.__dict__.values():
         if hasattr(device, 'close'):
             device.close()
-    twist_subscriber.destroy_node()
-    position_subscriber.destroy_node()
-    speed_publisher.destroy_node()
+    astr_sub.destroy_node()
+    astr_pub.destroy_node()
     rclpy.shutdown()
     cv2.destroyAllWindows()
 
@@ -244,11 +247,11 @@ def loop(run_conf: RunConfig,
          params: Parameters,
          defl_adaptation: DeflectionAdaptation,
          therm_adaptation: ThermalAdaptation,
-         speed_publisher: SpeedPublisher,
-         position_subscriber: PositionSubscriber,
-         twist_subscriber: TwistSubscriber,
+         astr_pub: AstrCartesianCommandPublisher,
+         astr_sub: FeedbackSubscriber,
          color_image_publisher: ColorImagePublisher,
-         thermal_image_publisher: ThermalImagePublisher):
+         thermal_image_publisher: ThermalImagePublisher, 
+         trajectory_path: str) -> None:
     """
     Run the real experiment
     """
@@ -257,6 +260,7 @@ def loop(run_conf: RunConfig,
 
     u0 = (params.v_min + params.v_max) / 2
     data_logger = DataLogger(run_conf.log_save_dir, run_conf.adaptive_velocity, None)
+    traj = Trajectory(trajectory_path)
 
     ret, raw_frame = t3.read()
     info, lut = t3.info()
@@ -265,11 +269,18 @@ def loop(run_conf: RunConfig,
 
     tip_neutral_px = []
     vstar = 0
-    while ret:
+    i = 0
+    cmd_point, cmd_orientation = traj[i]
+    while ret and i < len(traj):
+        if (np.linalg.norm(astr_sub.position - cmd_point) < 0.001) and (R.from_quat(astr_sub.orientation).apply(R.from_quat(cmd_orientation).inv()).magnitude() < 0.01):
+            i += 1
+            if i >= len(traj):
+                break
         ret, raw_frame = t3.read()
-        info, lut = t3.info()
+        _, lut = t3.info()
         thermal_arr = lut[raw_frame]
         color_frame = thermal_frame_to_color(thermal_arr)
+        
         if run_conf.control_mode is ControlMode.AUTONOMOUS:
             vstar = 7
         elif run_conf.control_mode is ControlMode.SHARED_CONTROL or run_conf.control_mode is ControlMode.TELEOPERATED:
@@ -283,7 +294,7 @@ def loop(run_conf: RunConfig,
                 break
 
         try:
-            u0 = np.linalg.norm(twist_subscriber.twist)
+            u0 = np.linalg.norm(astr_sub.twist)
             u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(run_conf, params, model, material,
                                                                  tip_neutral_px, defl_adaptation,
                                                                  therm_adaptation, u0, thermal_arr,
@@ -299,29 +310,23 @@ def loop(run_conf: RunConfig,
         if defl_mm > params.deflection_max:
             break
 
-        cv.imshow("Frame", color_frame)
-
         if vstar < 0.1:
             u0 = 0
         elif run_conf.control_mode is ControlMode.TELEOPERATED:
             u0 = vstar
 
-        pos = position_subscriber.position
-        data_logger.log_data(pos, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
+        data_logger.log_data(cmd_point, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
 
-        speed_publisher.set_speed(u0)
-        speed_publisher.publish_speed()
+        astr_pub.set_command([cmd_point[0], cmd_point[1], cmd_point[2]], cmd_orientation, u0)
         color_image_publisher.set_image(color_frame)
         color_image_publisher.publish_image()
         thermal_image_publisher.set_image(thermal_arr)
         thermal_image_publisher.publish_image()
-        rclpy.spin_once(speed_publisher)
+        rclpy.spin_once(astr_pub)
         rclpy.spin_once(color_image_publisher)
         rclpy.spin_once(thermal_image_publisher)
-        if cv.waitKey(1) & 0xFF == ord('q'):
-            break
 
-    speed_publisher.set_speed(0)
-    speed_publisher.publish_speed()
+    astr_pub.set_command(cmd_point, cmd_orientation, 0)
+    astr_pub.publish_command()
     data_logger.save_log()
 
