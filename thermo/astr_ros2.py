@@ -4,18 +4,15 @@ from .ParameterEstimation import *
 from .utils import *
 from .DataLogger import DataLogger
 import warnings
-from typing import Optional
 from dataclasses import dataclass
 from copy import deepcopy
 import pygame
 from enum import Enum
-from thermo.models import SteadyStateMinimizationModel, humanTissue, hydrogelPhantom
 from thermo.Trajectory import Trajectory
 from scipy.spatial.transform import Rotation as R
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Pose, Twist # for position and velocity of ASTR
-from std_msgs.msg import Float32  # for speed
+from geometry_msgs.msg import Pose # for position and velocity of ASTR
 from sensor_msgs.msg import Image  # for thermal image
 from astr_msgs.msg import AstrCartesianCommand, AstrFeedback, AstrCartesianMotionMode
 
@@ -92,7 +89,7 @@ class FeedbackSubscriber(Node):
         self.twist = np.array([0, 0, 0])
 
     def listener_callback(self, msg: AstrFeedback):
-        self.orientation = np.array([msg.actual_cartesian_position.orientation.x, msg.actual_cartesian_position.orientation.y, msg.actual_cartesian_position.orientation.z, msg.actual_cartesian_position.orientation.w])
+        self.orientation = R.from_quat(np.array([msg.actual_cartesian_position.orientation.x, msg.actual_cartesian_position.orientation.y, msg.actual_cartesian_position.orientation.z, msg.actual_cartesian_position.orientation.w]))
         self.position = np.array([msg.actual_cartesian_position.position.x, msg.actual_cartesian_position.position.y, msg.actual_cartesian_position.position.z])
         self.twist = np.array([msg.actual_cartesian_velocity.linear.x, msg.actual_cartesian_velocity.linear.y, msg.actual_cartesian_velocity.linear.z])
 
@@ -149,8 +146,7 @@ def update_kf(model, material: MaterialProperties, defl_adaptation: DeflectionAd
     material.k = therm_adaptation.k
     material.rho = therm_adaptation.rho
 
-def update(run_conf: RunConfig,
-           params: Parameters,
+def update(params: Parameters,
            model,
            material: MaterialProperties,
            tip_candidates_px: list[np.ndarray],
@@ -160,7 +156,6 @@ def update(run_conf: RunConfig,
            vstar: float):
     """
     Update velocity and adaptive parameters
-    :param run_conf: Running parameters
     :param params: Parameters object
     :param model: Model object
     :param material: Material properties
@@ -184,8 +179,7 @@ def update(run_conf: RunConfig,
             defl_adaptation.init = True
 
     tip_mm = np.array(tip_px) / params.thermal_px_per_mm if tip_px is not None else None
-    tip_lead_distance = 0
-    w_px, ellipse = cv_isotherm_width(frame, model.t_death)
+    w_px, _ = cv_isotherm_width(frame, model.t_death)
     w_mm = w_px / params.thermal_px_per_mm
     if u0 > 0:
         update_kf(model, material, defl_adaptation, therm_adaptation, tip_mm, w_mm, u0)
@@ -199,7 +193,8 @@ def update(run_conf: RunConfig,
 
 def main(model,
          run_conf: RunConfig,
-         devices: Devices) -> None:
+         devices: Devices,
+         trajectory_path: str) -> None:
     """
     Main function to run the experiment
     :param model: Model object
@@ -207,6 +202,8 @@ def main(model,
     :param devices: Devices object
     """
     params = Parameters()
+
+    trajectory = Trajectory(trajectory_path)
 
     ## Initialize the parameter adaptation
     material = deepcopy(run_conf.material)
@@ -231,7 +228,7 @@ def main(model,
 
     loop(run_conf, model, material, devices, params, deflection_adaptation, thermal_adaptation,
         astr_sub, astr_pub,
-        color_image_publisher, thermal_image_publisher)
+        color_image_publisher, thermal_image_publisher, trajectory)
 
     for device in devices.__dict__.values():
         if hasattr(device, 'close'):
@@ -251,7 +248,7 @@ def loop(run_conf: RunConfig,
          astr_sub: FeedbackSubscriber,
          color_image_publisher: ColorImagePublisher,
          thermal_image_publisher: ThermalImagePublisher, 
-         trajectory_path: str) -> None:
+         traj: Trajectory) -> None:
     """
     Run the real experiment
     """
@@ -260,7 +257,6 @@ def loop(run_conf: RunConfig,
 
     u0 = (params.v_min + params.v_max) / 2
     data_logger = DataLogger(run_conf.log_save_dir, run_conf.adaptive_velocity, None)
-    traj = Trajectory(trajectory_path)
 
     ret, raw_frame = t3.read()
     info, lut = t3.info()
@@ -270,9 +266,9 @@ def loop(run_conf: RunConfig,
     tip_neutral_px = []
     vstar = 0
     i = 0
-    cmd_point, cmd_orientation = traj[i]
     while ret and i < len(traj):
-        if (np.linalg.norm(astr_sub.position - cmd_point) < 0.001) and (R.from_quat(astr_sub.orientation).apply(R.from_quat(cmd_orientation).inv()).magnitude() < 0.01):
+        cmd_point, cmd_orientation = traj[i]
+        if (np.linalg.norm(astr_sub.position - cmd_point) < 0.001) and (astr_sub.orientation.apply(cmd_orientation.inv()).magnitude() < 0.01):
             i += 1
             if i >= len(traj):
                 break
@@ -280,7 +276,7 @@ def loop(run_conf: RunConfig,
         _, lut = t3.info()
         thermal_arr = lut[raw_frame]
         color_frame = thermal_frame_to_color(thermal_arr)
-        
+
         if run_conf.control_mode is ControlMode.AUTONOMOUS:
             vstar = 7
         elif run_conf.control_mode is ControlMode.SHARED_CONTROL or run_conf.control_mode is ControlMode.TELEOPERATED:
@@ -295,7 +291,7 @@ def loop(run_conf: RunConfig,
 
         try:
             u0 = np.linalg.norm(astr_sub.twist)
-            u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(run_conf, params, model, material,
+            u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(params, model, material,
                                                                  tip_neutral_px, defl_adaptation,
                                                                  therm_adaptation, u0, thermal_arr,
                                                                  vstar=vstar)
@@ -317,7 +313,7 @@ def loop(run_conf: RunConfig,
 
         data_logger.log_data(cmd_point, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
 
-        astr_pub.set_command([cmd_point[0], cmd_point[1], cmd_point[2]], cmd_orientation, u0)
+        astr_pub.set_command([cmd_point[0], cmd_point[1], cmd_point[2]], cmd_orientation.as_quat(), u0)
         color_image_publisher.set_image(color_frame)
         color_image_publisher.publish_image()
         thermal_image_publisher.set_image(thermal_arr)

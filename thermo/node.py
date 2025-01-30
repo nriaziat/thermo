@@ -2,8 +2,11 @@ from .astr_ros2 import Devices, RunConfig, ControlMode
 from .astr_ros2 import main as thermo
 from .T3pro import T3pro
 from .models import SteadyStateMinimizationModel, hydrogelPhantom, humanTissue
+import click
 
-def main():
+@click.command()
+@click.argument('trajectory_path', type=str)
+def main(trajectory_path: str):
     t3 = T3pro(port=4)
     model = SteadyStateMinimizationModel(qw=1, qd=1, r=1)
     devices = Devices(t3, None)
@@ -14,4 +17,4 @@ def main():
         log_save_dir='./thermo_logs',
         material=material,
     )
-    thermo(model=model, devices=devices, run_conf=run_conf)
+    thermo(model=model, devices=devices, run_conf=run_conf, trajectory_path=trajectory_path)
