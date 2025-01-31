@@ -63,15 +63,16 @@ class AstrCartesianCommandPublisher(Node):
         self.publisher_ = self.create_publisher(AstrCartesianCommand, 'cartesian_command', 10)
         self.command = AstrCartesianCommand()
 
-    def set_command(self, position: list, orientation: list, velocity: float):
+    def set_command(self, position: list, orientation: R, velocity: float):
         self.command.target_pose = Pose()
         self.command.target_pose.position.x = position[0]
         self.command.target_pose.position.y = position[1]
         self.command.target_pose.position.z = position[2]
-        self.command.target_pose.orientation.x = orientation[0]
-        self.command.target_pose.orientation.y = orientation[1]
-        self.command.target_pose.orientation.z = orientation[2]
-        self.command.target_pose.orientation.w = orientation[3]
+        quat = orientation.as_quat()
+        self.command.target_pose.orientation.x = quat[0]
+        self.command.target_pose.orientation.y = quat[1]
+        self.command.target_pose.orientation.z = quat[2]
+        self.command.target_pose.orientation.w = quat[3]
         self.command.motion_mode.mode_enum = AstrCartesianMotionMode.CUSTOM
         self.command.motion_mode.requested_lin_vel_m_s = velocity
         self.command.motion_mode.requested_ang_vel_deg_s = 0
@@ -203,7 +204,9 @@ def main(model,
     """
     params = Parameters()
 
-    trajectory = Trajectory(trajectory_path)
+    points = np.load(trajectory_path + '/points.npy')
+    normals = np.load(trajectory_path + '/normals.npy')
+    trajectory = Trajectory(points, normals)
 
     ## Initialize the parameter adaptation
     material = deepcopy(run_conf.material)
@@ -267,8 +270,8 @@ def loop(run_conf: RunConfig,
     vstar = 0
     i = 0
     while ret and i < len(traj):
-        cmd_point, cmd_orientation = traj[i]
-        if (np.linalg.norm(astr_sub.position - cmd_point) < 0.001) and (astr_sub.orientation.apply(cmd_orientation.inv()).magnitude() < 0.01):
+        cmd_pose = traj[i]
+        if (np.linalg.norm(astr_sub.position - cmd_pose.position) < 0.001) and (astr_sub.orientation.apply(cmd_pose.orientation.inv()).magnitude() < 0.01):
             i += 1
             if i >= len(traj):
                 break
@@ -311,9 +314,9 @@ def loop(run_conf: RunConfig,
         elif run_conf.control_mode is ControlMode.TELEOPERATED:
             u0 = vstar
 
-        data_logger.log_data(cmd_point, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
+        data_logger.log_data(cmd_pose.position, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
 
-        astr_pub.set_command([cmd_point[0], cmd_point[1], cmd_point[2]], cmd_orientation.as_quat(), u0)
+        astr_pub.set_command([cmd_pose.position[0], cmd_pose.position[1], cmd_pose.position[2]], cmd_pose.orientation, u0)
         color_image_publisher.set_image(color_frame)
         color_image_publisher.publish_image()
         thermal_image_publisher.set_image(thermal_arr)
@@ -322,7 +325,7 @@ def loop(run_conf: RunConfig,
         rclpy.spin_once(color_image_publisher)
         rclpy.spin_once(thermal_image_publisher)
 
-    astr_pub.set_command(cmd_point, cmd_orientation, 0)
+    astr_pub.set_command(cmd_pose.position, cmd_pose.orientation, 0)
     astr_pub.publish_command()
     data_logger.save_log()
 
