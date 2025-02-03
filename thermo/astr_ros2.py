@@ -1,8 +1,11 @@
 import cv2
+import rclpy.logging
+import rclpy.time
 from .T3pro import T3pro
 from .ParameterEstimation import *
 from .utils import *
 from .DataLogger import DataLogger
+from .ROS import *
 import warnings
 from dataclasses import dataclass
 from copy import deepcopy
@@ -11,10 +14,7 @@ from enum import Enum
 from thermo.Trajectory import Trajectory
 from scipy.spatial.transform import Rotation as R
 import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import Pose # for position and velocity of ASTR
-from sensor_msgs.msg import Image  # for thermal image
-from astr_msgs.msg import AstrCartesianCommand, AstrFeedback, AstrCartesianMotionMode
+from tf2_geometry_msgs import do_transform_pose
 
 warnings.filterwarnings("ignore")
 
@@ -27,6 +27,12 @@ Ta = 20
 FRAME_SIZE_PX = (384, 288)
 DEFLECTION_MAX = 10
 TIME_STEP = 1 / 24
+
+def position_error(pose1, pose2):
+    """
+    Compute the position error between two poses
+    """
+    return np.linalg.norm(np.array([pose1.position.x, pose1.position.y, pose1.position.z]) - np.array([pose2.position.x, pose2.position.y, pose2.position.z]))
 
 class ControlMode(str, Enum):
     AUTONOMOUS = 'AUTONOMOUS'
@@ -56,72 +62,6 @@ class RunConfig:
     adaptive_velocity: bool
     log_save_dir: str
     material: MaterialProperties
-
-class AstrCartesianCommandPublisher(Node):
-    def __init__(self):
-        super().__init__('cartesian_command_publisher')
-        self.publisher_ = self.create_publisher(AstrCartesianCommand, 'cartesian_command', 10)
-        self.command = AstrCartesianCommand()
-
-    def set_command(self, position: list, orientation: R, velocity: float):
-        self.command.target_pose = Pose()
-        self.command.target_pose.position.x = position[0]
-        self.command.target_pose.position.y = position[1]
-        self.command.target_pose.position.z = position[2]
-        quat = orientation.as_quat()
-        self.command.target_pose.orientation.x = quat[0]
-        self.command.target_pose.orientation.y = quat[1]
-        self.command.target_pose.orientation.z = quat[2]
-        self.command.target_pose.orientation.w = quat[3]
-        self.command.motion_mode.mode_enum = AstrCartesianMotionMode.CUSTOM
-        self.command.motion_mode.requested_lin_vel_m_s = velocity
-        self.command.motion_mode.requested_ang_vel_deg_s = 0
-
-    def publish_command(self):
-        self.publisher_.publish(self.command)
-
-class FeedbackSubscriber(Node):
-    def __init__(self):
-        super().__init__('feedback_subscriber')
-        self.subscription = self.create_subscription(AstrFeedback, 'feedback', self.listener_callback, 10)
-        self.subscription  # prevent unused variable warning
-        self.position = np.array([0, 0, 0])
-        self.orientation = np.array([0, 0, 0, 0])
-        self.twist = np.array([0, 0, 0])
-
-    def listener_callback(self, msg: AstrFeedback):
-        self.orientation = R.from_quat(np.array([msg.actual_cartesian_position.orientation.x, msg.actual_cartesian_position.orientation.y, msg.actual_cartesian_position.orientation.z, msg.actual_cartesian_position.orientation.w]))
-        self.position = np.array([msg.actual_cartesian_position.position.x, msg.actual_cartesian_position.position.y, msg.actual_cartesian_position.position.z])
-        self.twist = np.array([msg.actual_cartesian_velocity.linear.x, msg.actual_cartesian_velocity.linear.y, msg.actual_cartesian_velocity.linear.z])
-
-class ColorImagePublisher(Node):
-    def __init__(self):
-        super().__init__('color_image_publisher')
-        self.publisher_ = self.create_publisher(Image, 'color_image', 10)
-        self.image = None
-
-    def set_image(self, image):
-        self.image = image
-
-    def publish_image(self):
-        msg = Image()
-        msg.data = self.image
-        self.publisher_.publish(msg)
-
-class ThermalImagePublisher(Node):
-    def __init__(self):
-        super().__init__('thermal_image_publisher')
-        self.publisher_ = self.create_publisher(Image, 'thermal_image', 10)
-        self.image = None
-
-    def set_image(self, image):
-        self.image = image
-
-    def publish_image(self):
-        msg = Image()
-        msg.data = self.image
-        self.publisher_.publish(msg)
-
 
 def update_kf(model, material: MaterialProperties, defl_adaptation: DeflectionAdaptation, therm_adaptation: ThermalAdaptation,
               tip_mm: np.ndarray, w_mm: float, u0: float):
@@ -221,18 +161,24 @@ def main(model,
     #############################
 
     rclpy.init()
+    node = rclpy.create_node('thermo')
     astr_sub = FeedbackSubscriber()
     astr_pub = AstrCartesianCommandPublisher()
     color_image_publisher = ColorImagePublisher()
     thermal_image_publisher = ThermalImagePublisher()
+    tf_sub = FrameListener()
+    pc_pub = PointCloudPublisher()
+    tf_pub = CommandTFPublisher()
+    pc_pub.set_command(trajectory)
+
 
     model.vmin = params.v_min
     model.vmax = params.v_max
 
     loop(run_conf, model, material, devices, params, deflection_adaptation, thermal_adaptation,
-        astr_sub, astr_pub,
+        astr_pub, astr_sub, tf_sub, pc_pub, tf_pub,
         color_image_publisher, thermal_image_publisher, trajectory)
-
+    node.get_logger().info('Experiment finished')
     for device in devices.__dict__.values():
         if hasattr(device, 'close'):
             device.close()
@@ -249,6 +195,9 @@ def loop(run_conf: RunConfig,
          therm_adaptation: ThermalAdaptation,
          astr_pub: AstrCartesianCommandPublisher,
          astr_sub: FeedbackSubscriber,
+         tf_sub: FrameListener,
+         pc_pub: PointCloudPublisher,
+         tf_pub: CommandTFPublisher,
          color_image_publisher: ColorImagePublisher,
          thermal_image_publisher: ThermalImagePublisher, 
          traj: Trajectory) -> None:
@@ -260,25 +209,32 @@ def loop(run_conf: RunConfig,
 
     u0 = (params.v_min + params.v_max) / 2
     data_logger = DataLogger(run_conf.log_save_dir, run_conf.adaptive_velocity, None)
-
-    ret, raw_frame = t3.read()
-    info, lut = t3.info()
-    thermal_arr = lut[raw_frame]
-    thermal_frame_to_color(thermal_arr)
-
-    tip_neutral_px = []
+    
+    ret = True
+    if t3 is not None:
+        ret, raw_frame = t3.read()
+        info, lut = t3.info()
+        thermal_arr = lut[raw_frame]
+        thermal_frame_to_color(thermal_arr)
+        tip_neutral_px = []
+        
     vstar = 0
     i = 0
+    while (tf_sub.transform is None):
+        rclpy.spin_once(tf_sub)
     while ret and i < len(traj):
         cmd_pose = traj[i]
-        if (np.linalg.norm(astr_sub.position - cmd_pose.position) < 0.001) and (astr_sub.orientation.apply(cmd_pose.orientation.inv()).magnitude() < 0.01):
+        tf_pub.set_command(cmd_pose, tf_sub.transform)
+        if position_error(cmd_pose, astr_sub.pose) < 0.01:
             i += 1
             if i >= len(traj):
                 break
-        ret, raw_frame = t3.read()
-        _, lut = t3.info()
-        thermal_arr = lut[raw_frame]
-        color_frame = thermal_frame_to_color(thermal_arr)
+        
+        if t3 is not None:
+            ret, raw_frame = t3.read()
+            _, lut = t3.info()
+            thermal_arr = lut[raw_frame]
+            color_frame = thermal_frame_to_color(thermal_arr)
 
         if run_conf.control_mode is ControlMode.AUTONOMOUS:
             vstar = 7
@@ -291,23 +247,24 @@ def loop(run_conf: RunConfig,
                 vstar = 0
             if joy.get_button(1):
                 break
+        
+        if t3 is not None:
+            try:
+                u0 = np.linalg.norm(astr_sub.twist)
+                u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(params, model, material,
+                                                                    tip_neutral_px, defl_adaptation,
+                                                                    therm_adaptation, u0, thermal_arr,
+                                                                    vstar=vstar)
+            except ValueError:
+                print("Covariance error, ending.")
+                break
 
-        try:
-            u0 = np.linalg.norm(astr_sub.twist)
-            u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(params, model, material,
-                                                                 tip_neutral_px, defl_adaptation,
-                                                                 therm_adaptation, u0, thermal_arr,
-                                                                 vstar=vstar)
-        except ValueError:
-            print("Covariance error, ending.")
-            break
+            new_tip_pos = defl_adaptation.kf.x[:2] * params.thermal_px_per_mm
+            neutral_tip_pos = defl_adaptation.neutral_tip_mm * params.thermal_px_per_mm
+            color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos, neutral_tip_pos)
 
-        new_tip_pos = defl_adaptation.kf.x[:2] * params.thermal_px_per_mm
-        neutral_tip_pos = defl_adaptation.neutral_tip_mm * params.thermal_px_per_mm
-        color_frame = draw_info_on_frame(color_frame, defl_mm, w_mm, u0, new_tip_pos, neutral_tip_pos)
-
-        if defl_mm > params.deflection_max:
-            break
+            if defl_mm > params.deflection_max:
+                break
 
         if vstar < 0.1:
             u0 = 0
@@ -316,16 +273,28 @@ def loop(run_conf: RunConfig,
 
         data_logger.log_data(cmd_pose.position, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
 
-        astr_pub.set_command([cmd_pose.position[0], cmd_pose.position[1], cmd_pose.position[2]], cmd_pose.orientation, u0)
-        color_image_publisher.set_image(color_frame)
-        color_image_publisher.publish_image()
-        thermal_image_publisher.set_image(thermal_arr)
-        thermal_image_publisher.publish_image()
+        astr_pub.set_command(cmd_pose, u0, tf_sub.transform)
+        astr_pub.publish_command()
+        pc_pub.publish_command()
+        tf_pub.publish_command()
+
+        if t3 is not None:
+            color_image_publisher.set_image(color_frame)
+            color_image_publisher.publish_image()
+            thermal_image_publisher.set_image(thermal_arr)
+            thermal_image_publisher.publish_image()
+            rclpy.spin_once(color_image_publisher)
+            rclpy.spin_once(thermal_image_publisher)
+
         rclpy.spin_once(astr_pub)
-        rclpy.spin_once(color_image_publisher)
-        rclpy.spin_once(thermal_image_publisher)
+        astr_pub.loop_rate.sleep()
+        rclpy.spin_once(astr_sub)
+        rclpy.spin_once(tf_sub)
+        rclpy.spin_once(pc_pub)
+        rclpy.spin_once(tf_pub)
 
     astr_pub.set_command(cmd_pose.position, cmd_pose.orientation, 0)
+    astr_pub.command.motion_mode.should_stop_here = True
     astr_pub.publish_command()
     data_logger.save_log()
 

@@ -7,12 +7,12 @@ import click
 @click.command()
 @click.argument('trajectory_path', type=str)
 def main(trajectory_path: str):
-    t3 = T3pro(port=4)
+    t3=None,
     model = SteadyStateMinimizationModel(qw=1, qd=1, r=1)
-    devices = Devices(t3, None)
+    devices = Devices(None, None)
     material = hydrogelPhantom
     run_conf = RunConfig(
-        control_mode=ControlMode.AUTONOMOUS,
+        control_mode=ControlMode.CONSTANT_VELOCITY,
         adaptive_velocity=True,
         log_save_dir='./thermo_logs',
         material=material,
