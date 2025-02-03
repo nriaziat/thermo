@@ -1,23 +1,7 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from dataclasses import dataclass
-
-@dataclass
-class Point:
-    x: float
-    y: float
-    z: float
-
-    def __array__(self):
-        return np.array([self.x, self.y, self.z])
-    
-    def __getitem__(self, key):
-        return np.array(self)[key]
-
-@dataclass
-class Pose:
-    position: Point
-    orientation: R
+from geometry_msgs.msg import Pose, Point
 
 class Trajectory:
     """
@@ -54,7 +38,10 @@ class Trajectory:
             rot_mat = np.array([x, y, z]).T
             # assert np.isclose(np.linalg.det(rot_mat), 1, atol=1e-5), f"Rotation matrix is not valid: {rot_mat}: Det = {np.linalg.det(rot_mat)}."
             # assert np.allclose(rot_mat @ rot_mat.T, np.eye(3), atol=1e-5), f"Rotation matrix is not valid: {rot_mat}: R^T R =   {rot_mat @ rot_mat.T}."
-            pose = Pose(Point(*self.points[i]), R.from_matrix(rot_mat))
+            pose = Pose()
+            pose.position = Point(x=float(self.points[i][0]), y=float(self.points[i][1]), z=float(self.points[i][2]))
+            r = R.from_matrix(rot_mat)
+            pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = r.as_quat()
             self.poses.append(pose)
 
     
