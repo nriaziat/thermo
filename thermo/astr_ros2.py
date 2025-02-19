@@ -6,6 +6,7 @@ from .ParameterEstimation import *
 from .utils import *
 from .DataLogger import DataLogger
 from .ROS import *
+from .Trajectory import *
 import warnings
 from dataclasses import dataclass
 from copy import deepcopy
@@ -14,7 +15,6 @@ from enum import Enum
 from thermo.Trajectory import Trajectory
 from scipy.spatial.transform import Rotation as R
 import rclpy
-from tf2_geometry_msgs import do_transform_pose
 
 warnings.filterwarnings("ignore")
 
@@ -22,17 +22,11 @@ warnings.filterwarnings("ignore")
 THERMAL_PX_PER_MM = 35./5.  # px/mm
 V_MIN = 0  # minimum velocity [mm/s]
 V_MAX = 15.0  # maximum velocity [mm/s]
-T_DEATH = 60
-Ta = 20
+T_DEATH = 60  # thermal death temperature [C]
+Ta = 20  # ambient temperature [C]
 FRAME_SIZE_PX = (384, 288)
-DEFLECTION_MAX = 10
+DEFLECTION_MAX = 10  # maximum deflection before exiting program [mm]
 TIME_STEP = 1 / 24
-
-def position_error(pose1, pose2):
-    """
-    Compute the position error between two poses
-    """
-    return np.linalg.norm(np.array([pose1.position.x, pose1.position.y, pose1.position.z]) - np.array([pose2.position.x, pose2.position.y, pose2.position.z]))
 
 class ControlMode(str, Enum):
     AUTONOMOUS = 'AUTONOMOUS'
@@ -144,9 +138,11 @@ def main(model,
     """
     params = Parameters()
 
-    points = np.load(trajectory_path + '/points.npy')
-    normals = np.load(trajectory_path + '/normals.npy')
-    trajectory = Trajectory(points, normals)
+
+    # TODO: just a workaround for some bad trajectory removing first and last point
+    points = np.load(trajectory_path + '/points.npy')[1:-1]
+    normals = np.load(trajectory_path + '/normals.npy')[1:-1]
+    trajectory = Trajectory(points, normals, resample_distance=2e-3)
 
     ## Initialize the parameter adaptation
     material = deepcopy(run_conf.material)
@@ -169,15 +165,32 @@ def main(model,
     tf_sub = FrameListener()
     pc_pub = PointCloudPublisher()
     tf_pub = CommandTFPublisher()
-    pc_pub.set_command(trajectory)
-
-
+    node.get_logger().info('Waiting for transform')
+    while tf_sub.transform is None:
+        rclpy.spin_once(tf_sub)
+    node.get_logger().info("Transform found.")
+    pc_pub.set_command(trajectory, tf_sub.transform)
     model.vmin = params.v_min
     model.vmax = params.v_max
 
-    loop(run_conf, model, material, devices, params, deflection_adaptation, thermal_adaptation,
-        astr_pub, astr_sub, tf_sub, pc_pub, tf_pub,
-        color_image_publisher, thermal_image_publisher, trajectory)
+    args = {'run_conf': run_conf, 
+            'model': model, 
+            'material': material, 
+            'devices': devices, 
+            'params': params,
+            'defl_adaptation': deflection_adaptation,
+            'therm_adaptation': thermal_adaptation,
+            'astr_pub': astr_pub,
+            'astr_sub': astr_sub,
+            'pc_pub': pc_pub,
+            'tf_pub': tf_pub,
+            'color_image_publisher': color_image_publisher,
+            'thermal_image_publisher': thermal_image_publisher,
+            'traj': trajectory,
+            'arm_tf': tf_sub.transform}
+
+    loop(**args)
+    
     node.get_logger().info('Experiment finished')
     for device in devices.__dict__.values():
         if hasattr(device, 'close'):
@@ -187,7 +200,7 @@ def main(model,
     rclpy.shutdown()
     cv2.destroyAllWindows()
 
-def loop(run_conf: RunConfig,
+def loop(*, run_conf: RunConfig,
          model, material: MaterialProperties,
          devices,
          params: Parameters,
@@ -195,12 +208,12 @@ def loop(run_conf: RunConfig,
          therm_adaptation: ThermalAdaptation,
          astr_pub: AstrCartesianCommandPublisher,
          astr_sub: FeedbackSubscriber,
-         tf_sub: FrameListener,
          pc_pub: PointCloudPublisher,
          tf_pub: CommandTFPublisher,
          color_image_publisher: ColorImagePublisher,
          thermal_image_publisher: ThermalImagePublisher, 
-         traj: Trajectory) -> None:
+         traj: Trajectory,
+         arm_tf: TransformStamped) -> None:
     """
     Run the real experiment
     """
@@ -220,12 +233,10 @@ def loop(run_conf: RunConfig,
         
     vstar = 0
     i = 0
-    while (tf_sub.transform is None):
-        rclpy.spin_once(tf_sub)
     while ret and i < len(traj):
         cmd_pose = traj[i]
-        tf_pub.set_command(cmd_pose, tf_sub.transform)
-        if position_error(cmd_pose, astr_sub.pose) < 0.01:
+        tf_pub.set_command(cmd_pose, arm_tf)
+        if (error := position_error(cmd_pose, astr_sub.pose, arm_tf)) < 0.002 and orientation_error(cmd_pose, astr_sub.pose, arm_tf) < np.deg2rad(10):
             i += 1
             if i >= len(traj):
                 break
@@ -271,9 +282,11 @@ def loop(run_conf: RunConfig,
         elif run_conf.control_mode is ControlMode.TELEOPERATED:
             u0 = vstar
 
-        data_logger.log_data(cmd_pose.position, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
+        if t3 is not None:
+            data_logger.log_data(cmd_pose.position, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
 
-        astr_pub.set_command(cmd_pose, u0, tf_sub.transform)
+        # TODO: Remove hardcode and replace with u0
+        astr_pub.set_command(cmd_pose, 15, arm_tf)
         astr_pub.publish_command()
         pc_pub.publish_command()
         tf_pub.publish_command()
@@ -289,11 +302,10 @@ def loop(run_conf: RunConfig,
         rclpy.spin_once(astr_pub)
         astr_pub.loop_rate.sleep()
         rclpy.spin_once(astr_sub)
-        rclpy.spin_once(tf_sub)
         rclpy.spin_once(pc_pub)
         rclpy.spin_once(tf_pub)
 
-    astr_pub.set_command(cmd_pose.position, cmd_pose.orientation, 0)
+    astr_pub.set_command(cmd_pose, 15, arm_tf)
     astr_pub.command.motion_mode.should_stop_here = True
     astr_pub.publish_command()
     data_logger.save_log()

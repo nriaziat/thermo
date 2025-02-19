@@ -7,7 +7,7 @@ import click
 @click.command()
 @click.argument('trajectory_path', type=str)
 def main(trajectory_path: str):
-    t3=None,
+    t3=None
     model = SteadyStateMinimizationModel(qw=1, qd=1, r=1)
     devices = Devices(None, None)
     material = hydrogelPhantom
