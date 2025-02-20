@@ -71,9 +71,12 @@ class AstrCartesianCommandPublisher(Node):
         @param velocity: velocity in mm/s
         """
         self.command.target_pose = do_transform_pose(pose, tf)
-        self.command.motion_mode.mode_enum = AstrCartesianMotionMode.CUSTOM
+        if velocity > 1e-3:
+            self.command.motion_mode.mode_enum = AstrCartesianMotionMode.CUSTOM
+        else:
+            self.command.motion_mode.mode_enum = AstrCartesianMotionMode.IDLE
         self.command.motion_mode.requested_lin_vel_m_s = float(velocity * 1e-3)
-        self.command.motion_mode.requested_ang_vel_deg_s = 100.
+        self.command.motion_mode.requested_ang_vel_deg_s = 10.
 
     def publish_command(self):
         self.publisher_.publish(self.command)
@@ -89,6 +92,9 @@ class FeedbackSubscriber(Node):
     def listener_callback(self, msg: AstrFeedback):
         self.pose = msg.actual_cartesian_position
         self.twist = np.array([msg.actual_cartesian_velocity.linear.x, msg.actual_cartesian_velocity.linear.y, msg.actual_cartesian_velocity.linear.z])
+
+    def get_speed_m_s(self):
+        return np.linalg.norm(self.twist)
 
 class FrameListener(Node):
 

@@ -140,8 +140,8 @@ def main(model,
 
 
     # TODO: just a workaround for some bad trajectory removing first and last point
-    points = np.load(trajectory_path + '/points.npy')[1:-1]
-    normals = np.load(trajectory_path + '/normals.npy')[1:-1]
+    points = np.load(trajectory_path + '/points.npy')[2:-2]
+    normals = np.load(trajectory_path + '/normals.npy')[2:-2]
     trajectory = Trajectory(points, normals, resample_distance=2e-3)
 
     ## Initialize the parameter adaptation
@@ -235,9 +235,13 @@ def loop(*, run_conf: RunConfig,
     i = 0
     while ret and i < len(traj):
         cmd_pose = traj[i]
-        tf_pub.set_command(cmd_pose, arm_tf)
+        tf_pub.set_command(cmd_pose, arm_tf)  # this is for RVIZ showing the orientation of the requested pt 
+        ur_speed_mm_s = astr_sub.get_speed_m_s() * 1000
+        speed_error = abs(3 - ur_speed_mm_s)
+        print(f"Speed error: {speed_error:.2f} mm/s.")
         if (error := position_error(cmd_pose, astr_sub.pose, arm_tf)) < 0.002 and orientation_error(cmd_pose, astr_sub.pose, arm_tf) < np.deg2rad(10):
             i += 1
+            # print(astr_pub.command) 
             if i >= len(traj):
                 break
         
@@ -286,7 +290,7 @@ def loop(*, run_conf: RunConfig,
             data_logger.log_data(cmd_pose.position, w_mm, u0, vstar, defl_mm, thermal_arr, defl_adaptation, therm_adaptation, None)
 
         # TODO: Remove hardcode and replace with u0
-        astr_pub.set_command(cmd_pose, 15, arm_tf)
+        astr_pub.set_command(cmd_pose, 3, arm_tf)
         astr_pub.publish_command()
         pc_pub.publish_command()
         tf_pub.publish_command()
@@ -304,8 +308,9 @@ def loop(*, run_conf: RunConfig,
         rclpy.spin_once(astr_sub)
         rclpy.spin_once(pc_pub)
         rclpy.spin_once(tf_pub)
-
-    astr_pub.set_command(cmd_pose, 15, arm_tf)
+    
+    # DO NOT SET VELOCITY TO 0 OR IDLE MODE
+    astr_pub.set_command(cmd_pose, 3, arm_tf)
     astr_pub.command.motion_mode.should_stop_here = True
     astr_pub.publish_command()
     data_logger.save_log()
