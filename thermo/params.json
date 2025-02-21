@@ -1,0 +1,10 @@
+{
+    "thermal_px_per_mm": 7.0,
+    "v_min": 0.0, 
+    "v_max": 15.0,
+    "t_death": 60.0,
+    "t_amb": 20.0,
+    "frame_size_px": [384, 288],
+    "deflection_max": 10.0, 
+    "time_step": 0.04166666667
+}

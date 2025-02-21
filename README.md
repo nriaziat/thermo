@@ -7,10 +7,9 @@
 3. Mount tissue sample under robot arm and position such that zivid camera can see it. 
 
 ## Capture Point Cloud
-1. Run astr: ```ros2 launch astr_driver astr_bringup.launch.py launch_rviz:=true use_fake_hardware:=true description_file_electrocautery_arm:=electrocautery_arm_mounted_with_zivid_and_tool.urdf.xacro```
-2. Run deployer: ```deployer -s /home/imerse/ros2_wss/astr2_ws/install/astr_controller/share/astr_controller/scripts/astr_mid_level_controller.ops```
+1. Run astr: ```ros2 launch astr_driver astr_bringup.launch.py launch_rviz:=true use_fake_hardware:=false description_file_electrocautery_arm:=electrocautery_arm_mounted_with_zivid_and_tool.urdf.xacro```
 3. Run ```ros2 run nephrectomy_vision pc_helper``` for converting to numpy and downsampling. 
-4. Start zivid driver: ```ros2 run zivid_camera zivid_camera --ros-args -p settings_file_path:=/home/imerse/red_zivid.yml```. Point file path to yaml saved from Zivid studio. For red tongue, use red subsample. 
+4. Start zivid driver: ```source ~/ros2_wss/nephrectomy_ws/install/setup.bash && ros2 run zivid_camera zivid_camera --ros-args -p settings_file_path:=/home/imerse/red_zivid.yml```. Point file path to yaml saved from Zivid studio. For red tongue, use red subsample. 
 5. Run ```ros2 launch nephrectomy_vision camera_tf_broadcasters.launch.py```. Ensure ```zivid_link``` exists in RVIZ. 
 6. Trigger capture with ```ros2 service call /get_point_cloud std_srvs/srv/Trigger``` and wait for resampling and saving. 
 

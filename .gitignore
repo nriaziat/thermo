@@ -9,6 +9,8 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+install/ 
+log/
 develop-eggs/
 dist/
 downloads/
@@ -239,3 +241,4 @@ fabric.properties
 
 logs/
 /sam2/
+trajectory.png

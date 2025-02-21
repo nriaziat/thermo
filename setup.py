@@ -24,7 +24,8 @@ setup(
  tests_require=['pytest'],
  entry_points={
      'console_scripts': [
-             'node = thermo.node:main'
+             'traj_node = thermo.traj_node:main',
+             'controller_node = thermo.controller_node:main',
      ],
    },
 )

@@ -143,7 +143,7 @@ class ThermalAdaptation(UKFIdentification):
         return self.kf.x[3] * 1e-9
 
     @property
-    def k(self):
+    def lambda_therm(self):
         return self.kf.x[4] * 1e-3
 
     @property

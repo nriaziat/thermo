@@ -1,7 +1,9 @@
 from rclpy.node import Node
+from std_msgs.msg import Float32
 from geometry_msgs.msg import Pose, Point32, PointStamped # for position and velocity of ASTR
 from sensor_msgs.msg import Image, PointCloud  # for thermal image
 from astr_msgs.msg import AstrCartesianCommand, AstrFeedback, AstrCartesianMotionMode
+from thermo_msgs.msg import LoggingData
 from tf2_ros.transform_listener import TransformListener
 from tf2_ros.transform_broadcaster import TransformBroadcaster
 from tf2_ros import TransformException
@@ -11,10 +13,82 @@ from .Trajectory import Trajectory
 import numpy as np
 import rclpy
 
+class LoggingDataPublisher(Node):
+    def __init__(self):
+        super().__init__('logging_data_publisher')
+        self.publisher_ = self.create_publisher(LoggingData, '/thermo/logging_data', 10)
+        self.logging_data = LoggingData()
+
+    def set_logging_data(self, pose: Pose, 
+                         width_mm: float,
+                         cmd_speed_mm_s: float,
+                         meas_speed_mm_s: float,
+                         vstar_mm_s: float,
+                         defl_mm: float,
+                         c_defl: float,
+                         q: float,
+                         cp: float,
+                         lambda_thermal: float,
+                            rho: float):
+            
+        self.logging_data.header.stamp = self.get_clock().now().to_msg()
+        self.logging_data.pose = pose
+        self.logging_data.width_mm = width_mm
+        self.logging_data.cmd_speed_mm_s = cmd_speed_mm_s
+        self.logging_data.meas_speed_mm_s = meas_speed_mm_s
+        self.logging_data.vstar_mm_s = vstar_mm_s
+        self.logging_data.deflection_mm = defl_mm
+        self.logging_data.c_defl = c_defl
+        self.logging_data.q = q
+        self.logging_data.cp = cp
+        self.logging_data.lambda_thermal = lambda_thermal
+        self.logging_data.rho = rho
+
+    def publish_logging_data(self):
+        self.publisher_.publish(self.logging_data)
+
+class ParameterEstiamtePublisher(Node):
+    def __init__(self):
+        super().__init__('parameter_estimate_publisher')
+        self.publisher_ = self.create_publisher(Float32, '/thermo/parameter_estimate', 10)
+        self.parameter_estimate = 0
+
+    def set_parameter_estimate(self, estimate: float):
+        self.parameter_estimate = estimate
+
+    def publish_parameter_estimate(self):
+        msg = Float32()
+        msg.data = self.parameter_estimate
+        self.publisher_.publish(msg)
+
+class SpeedPublisher(Node):
+    def __init__(self):
+        super().__init__('speed_publisher')
+        self.publisher_ = self.create_publisher(Float32, '/thermo/speed', 10)
+        self.speed_mm_s = 0
+    
+    def set_speed(self, speed: float):
+        self.speed_mm_s = speed
+
+    def publish_speed(self):
+        msg = Float32()
+        msg.data = self.speed_mm_s / 1000  # Convert mm/s to m/s
+        self.publisher_.publish(msg)
+
+class SpeedSubscriber(Node):
+    def __init__(self):
+        super().__init__('speed_subscriber')
+        self.subscription = self.create_subscription(Float32, '/thermo/speed', self.listener_callback, 10)
+        self.subscription  # prevent unused variable warning
+        self.speed_mm_s = 0
+
+    def listener_callback(self, msg: Float32):
+        self.speed_mm_s = msg.data * 1000  # Convert m/s to mm/s
+
 class PointCloudPublisher(Node):
     def __init__(self):
         super().__init__('thermo_pc_pub')
-        self.publisher_ = self.create_publisher(PointCloud, '/traj_pc', 10)
+        self.publisher_ = self.create_publisher(PointCloud, '/thermo/traj_pc', 10)
         self.pc = PointCloud()
         self.pc.header.frame_id = 'electrocautery_arm_base_link'
         self.loop_rate = self.create_rate(100)
@@ -40,7 +114,7 @@ class CommandTFPublisher(Node):
         super().__init__('thermo_tf_pub')
         self.name = self.declare_parameter(
           'framename', 'target').get_parameter_value().string_value
-        self.publisher_ = self.create_publisher(TransformStamped, '/target_tf', 10)
+        self.publisher_ = self.create_publisher(TransformStamped, '/thermo/target_tf', 10)
         self.tf = TransformStamped()
         self.tf_broadcaster = TransformBroadcaster(self)
         self.tf.header.frame_id = 'electrocautery_arm_base_link'
@@ -59,7 +133,7 @@ class CommandTFPublisher(Node):
         self.tf_broadcaster.sendTransform(self.tf)
 
 
-class AstrCartesianCommandPublisher(Node):
+class ASTRCartesianCommandPublisher(Node):
     def __init__(self):
         super().__init__('thermo_pub')
         self.publisher_ = self.create_publisher(AstrCartesianCommand, '/electrocautery_arm/target_pt', 10)
@@ -76,14 +150,14 @@ class AstrCartesianCommandPublisher(Node):
         else:
             self.command.motion_mode.mode_enum = AstrCartesianMotionMode.IDLE
         self.command.motion_mode.requested_lin_vel_m_s = float(velocity * 1e-3)
-        self.command.motion_mode.requested_ang_vel_deg_s = 10.
+        self.command.motion_mode.requested_ang_vel_deg_s = 100.
 
     def publish_command(self):
         self.publisher_.publish(self.command)
 
-class FeedbackSubscriber(Node):
-    def __init__(self):
-        super().__init__('thermo_sub')
+class ASTRFeedbackSubscriber(Node):
+    def __init__(self, name: str):
+        super().__init__(f"astr_feedback_subscriber_{name}")
         self.subscription = self.create_subscription(AstrFeedback, '/electrocautery_arm/state_feedback', self.listener_callback, 10)
         self.subscription  # prevent unused variable warning
         self.pose = Pose()
@@ -133,7 +207,7 @@ class FrameListener(Node):
 class ColorImagePublisher(Node):
     def __init__(self):
         super().__init__('color_image_publisher')
-        self.publisher_ = self.create_publisher(Image, 'color_image', 10)
+        self.publisher_ = self.create_publisher(Image, '/thermo/color_image', 10)
         self.image = None
 
     def set_image(self, image):
@@ -147,7 +221,7 @@ class ColorImagePublisher(Node):
 class ThermalImagePublisher(Node):
     def __init__(self):
         super().__init__('thermal_image_publisher')
-        self.publisher_ = self.create_publisher(Image, 'thermal_image', 10)
+        self.publisher_ = self.create_publisher(Image, '/thermo/thermal_image', 10)
         self.image = None
 
     def set_image(self, image):

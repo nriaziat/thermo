@@ -119,28 +119,26 @@ def find_hottest_point(therm_frame: np.ndarray) -> tuple | None:
     """
     return np.unravel_index(np.argmax(therm_frame), therm_frame.shape)[::-1]
 
-def find_wavefront_distance(ellipse: tuple, tool_tip: tuple) -> float:
-    """
-    Find the distance from the tool tip to the wavefront
-    :param ellipse: Isotherm ellipse parameters (center, axes, angle)
-    :param tool_tip: Tool tip location
-    :return: Distance from the tool tip to the wavefront [px]
-    """
-    # find leading edge (furthest along the major axis) of the rotated ellipse
-    tool_tip = np.array([tool_tip[1], tool_tip[0]])
-    angle = ellipse[2] * np.pi / 180
-    if angle > np.pi / 2:
-        angle += np.pi / 2
-    else:
-        angle -= np.pi / 2
-    r_major = max(ellipse[1]) / 2
-    ellipse_tip = (ellipse[0] - np.array([np.cos(angle) * r_major, np.sin(angle) * r_major]),
-                   ellipse[0] + np.array([np.cos(angle) * r_major, np.sin(angle) * r_major]))
-    ellipse_tip = min(ellipse_tip, key=lambda x: np.linalg.norm(tool_tip - x))
-    x_dir = np.sign(np.dot(ellipse_tip - tool_tip, np.array([1, 0])))
-    return x_dir * np.linalg.norm(tool_tip - ellipse_tip)
-
-
+# def find_wavefront_distance(ellipse: tuple, tool_tip: tuple) -> float:
+#     """
+#     Find the distance from the tool tip to the wavefront
+#     :param ellipse: Isotherm ellipse parameters (center, axes, angle)
+#     :param tool_tip: Tool tip location
+#     :return: Distance from the tool tip to the wavefront [px]
+#     """
+#     # find leading edge (furthest along the major axis) of the rotated ellipse
+#     tool_tip = np.array([tool_tip[1], tool_tip[0]])
+#     angle = ellipse[2] * np.pi / 180
+#     if angle > np.pi / 2:
+#         angle += np.pi / 2
+#     else:
+#         angle -= np.pi / 2
+#     r_major = max(ellipse[1]) / 2
+#     ellipse_tip = (ellipse[0] - np.array([np.cos(angle) * r_major, np.sin(angle) * r_major]),
+#                    ellipse[0] + np.array([np.cos(angle) * r_major, np.sin(angle) * r_major]))
+#     ellipse_tip = min(ellipse_tip, key=lambda x: np.linalg.norm(tool_tip - x))
+#     x_dir = np.sign(np.dot(ellipse_tip - tool_tip, np.array([1, 0])))
+#     return x_dir * np.linalg.norm(tool_tip - ellipse_tip)
 
 @dataclass
 class LoggingData:

@@ -55,20 +55,25 @@ class Trajectory:
 
     def _compute_projected_tangents(self):
         # compute the tangent at each point, projected onto the tangent plane
-        self.projected_tangents = np.zeros((len(self.points), 3))
-        self.tangents = np.diff(self.points, axis=0)
+        self.projected_tangents = np.zeros((len(self.points[1:-1]), 3))
+        self.tangents = -np.diff(self.points[1:-1], axis=0)
         self.tangents = np.vstack([self.tangents, self.tangents[-1]])
+        # smooth the tangents with a moving average
+        for i in range(len(self.tangents) - 1):
+            self.tangents[i] = (self.tangents[i] + self.tangents[i+1]) / 2
+        self.tangents = np.vstack([self.tangents[0], self.tangents])
         self.tangents /= np.linalg.norm(self.tangents, axis=1)[:, None]
 
-        for i in range(len(self.poses)):
-            self.projected_tangents[i] = self.tangents[i] - np.dot(self.projected_tangents[i], self.normals[i]) * self.normals[i]
-            self.projected_tangents[i] /= np.linalg.norm(self.projected_tangents[i])
+        for i in range(len(self.projected_tangents)):
+            self.projected_tangents[i] = self.tangents[i] - np.dot(self.tangents[i], self.normals[i]) * self.normals[i]
+            # self.projected_tangents[i] /= np.linalg.norm(self.projected_tangents[i])
 
     def _compute_pose(self):
         # for each point, compute the orientation of the end effector in the global frame that would align the z-axis with the normal and best align the x-axis with the tangent
+        self._smooth_normals()
         self._compute_projected_tangents()
-        for i in range(len(self.points)):
-            z = -self.normals[i] 
+        for i in range(len(self.projected_tangents)):
+            z = -self.normals[i]
             x = self.projected_tangents[i]
             y = np.cross(z, x)
             rot_mat = np.array([x, y, z]).T
@@ -78,9 +83,23 @@ class Trajectory:
             pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = r.as_quat()
             self.poses.append(pose)
 
+        start_pose = Pose()
+        start_pose.position.x = self.points[0][0]
+        start_pose.position.y = self.points[0][1]
+        start_pose.position.z = self.points[0][2]
+        start_pose.orientation = self.poses[0].orientation
+        self.poses = [start_pose] + self.poses
+        end_pose = Pose()
+        end_pose.position.x = self.points[-1][0]
+        end_pose.position.y = self.points[-1][1]
+        end_pose.position.z = self.points[-1][2]
+
+        end_pose.orientation = self.poses[-1].orientation
+        self.poses.append(end_pose)
+
         # smooth entry and exit 
-        self.poses[0].orientation = self.poses[1].orientation
-        self.poses[-1].orientation = self.poses[-1].orientation
+        # self.poses[0].orientation = self.poses[1].orientation
+        # self.poses[-1].orientation = self.poses[-1].orientation
         self._smooth_poses()
         self._interpolate_poses()
 
@@ -88,8 +107,14 @@ class Trajectory:
         # interpolate between poses
         interpolated_poses = []
         rotations = R.from_quat([[pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w] for pose in self.poses])
-        rot_spline = RotationSpline(range(len(self.poses)), rotations)
-        for i in range(len(self.poses) - 1):
+        rot_spline = RotationSpline(range(1, len(self.poses)-1), rotations[1:-1])
+        pose = Pose()
+        pose.position.x = self.poses[0].position.x 
+        pose.position.y = self.poses[0].position.y 
+        pose.position.z = self.poses[0].position.z
+        pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = rotations[0].as_quat()
+        interpolated_poses.append(pose)        
+        for i in range(1, len(self.poses) - 1 - 1):
             t = np.linspace(i, i+1, 10)
             for time in t:
                 r = rot_spline(time)
@@ -99,8 +124,13 @@ class Trajectory:
                 pose.position.z = self.poses[i].position.z + (self.poses[i+1].position.z - self.poses[i].position.z) * (time - i)
                 pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = r.as_quat()
                 interpolated_poses.append(pose)
+        pose = Pose()
+        pose.position.x = self.poses[-1].position.x 
+        pose.position.y = self.poses[-1].position.y 
+        pose.position.z = self.poses[-1].position.z
+        pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = rotations[-1].as_quat()
+        interpolated_poses.append(pose)        
         self.poses = interpolated_poses
-
 
     def _smooth_poses(self):
         window = 2
@@ -111,6 +141,16 @@ class Trajectory:
             mean_rot = rots.mean(weights=[alpha, 1-alpha])
             for pose in poses:
                 pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = mean_rot.as_quat()
+
+    def _smooth_normals(self):
+        window = 2
+        alpha = 0.5
+        for i in range(len(self.normals) - window + 1):
+            normals = self.normals[i:i+window]
+            mean_normal = np.mean(normals, axis=0)
+            mean_normal /= np.linalg.norm(mean_normal)
+            for normal in normals:
+                normal[:] = mean_normal[:]
 
     def __len__(self):
         return len(self.poses)
