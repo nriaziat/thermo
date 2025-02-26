@@ -8,6 +8,7 @@
 
 ## Capture Point Cloud
 1. Run astr: ```ros2 launch astr_driver astr_bringup.launch.py launch_rviz:=true use_fake_hardware:=false description_file_electrocautery_arm:=electrocautery_arm_mounted_with_zivid_and_tool.urdf.xacro```
+2. Run orocos deployer: ```source orocos_ws/install/setup.bash && deployer -s /home/imerse/ros2_wss/astr2_ws/install/astr_controller/share/astr_controller/scripts/astr_mid_level_controller.ops```.
 3. Run ```ros2 run nephrectomy_vision pc_helper``` for converting to numpy and downsampling. 
 4. Start zivid driver: ```source ~/ros2_wss/nephrectomy_ws/install/setup.bash && ros2 run zivid_camera zivid_camera --ros-args -p settings_file_path:=/home/imerse/red_zivid.yml```. Point file path to yaml saved from Zivid studio. For red tongue, use red subsample. 
 5. Run ```ros2 launch nephrectomy_vision camera_tf_broadcasters.launch.py```. Ensure ```zivid_link``` exists in RVIZ. 
@@ -16,10 +17,11 @@
 ## Analyze PC and get Trajectory
 
 1. Move .ply file from nephrectomy_ws to ethan_ws. 
-2. Run ethan's planner: ```python3 manual_planner.py```. Outputs normals.npy and points.npy (and verification pyplot). Double check normals and make sure they are similarly oriented, otherwise yell at ethan and remove those points manually. 
+2. Run ethan's planner: ```python3 manual_planner_v2.py --pcd observed_pointcloud.ply --cut_depth 0.0 --ret_dist 0.05 --visualize True --multiplier 1.0```. Outputs normals.npy and points.npy (and verification pyplot). Double check normals and make sure they are similarly oriented, otherwise yell at ethan and remove those points manually. 
 3. Move normals and points to speed_ws and place in trajectory folder. 
 
 ## Preplan and visualize path. 
 
 1. Go to speed_ws and source ros and python env. 
-2. Run ros node: ```ros2 run thermo node ./src/trajectory``` and point to trajectory directory. 
+2. On the teach pendant, run either ```urcap``` or ```external_control```.
+2. Run ros node: ```ros2 run thermo node ./src/trajectory ./src/thermo/thermo/params.json``` and point to trajectory directory. 

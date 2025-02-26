@@ -31,14 +31,14 @@ class DeflectionAdaptation(UKFIdentification):
         return x
 
     @property
-    def c_defl(self):
+    def c_defl(self) -> float:
         """
         Estimated deflection damping constant [s]
         """
         return self.kf.x[6]
 
     @property
-    def defl_mm(self):
+    def defl_mm(self) -> float:
         """
         Distance between the estimated tip position and the estimated neutral tip position [mm]
         """

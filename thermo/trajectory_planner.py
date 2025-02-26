@@ -28,8 +28,6 @@ def main(
     :param params: Running parameters
     :param trajectory_path: Path to the trajectory
     """
-    params = Parameters()
-
 
     # TODO: just a workaround for some bad trajectory removing first and last point
     points = np.load(trajectory_path + '/points.npy')
@@ -51,6 +49,7 @@ def main(
         rclpy.spin_once(tf_sub)
     node.get_logger().info("Transform found.")
     pc_pub.set_command(trajectory, tf_sub.transform)
+    pc_pub.publish_command()
 
     args = {
             'params': params,
@@ -60,7 +59,7 @@ def main(
             'tf_pub': tf_pub,
             'speed_sub': speed_sub,
             'traj': trajectory,
-            'arm_tf': tf_sub.transform
+            'arm_tf': tf_sub.transform,
             }
 
     loop(**args)
@@ -102,16 +101,15 @@ def loop(*,
 
         astr_pub.set_command(cmd_pose, u0, arm_tf)
         astr_pub.publish_command()  
-        pc_pub.publish_command()
         tf_pub.publish_command()            
-
-        while position_error(cmd_pose, astr_sub.pose, arm_tf) > 0.002 or orientation_error(cmd_pose, astr_sub.pose, arm_tf) > np.deg2rad(10):
-            rclpy.spin_once(astr_pub)
+        # rclpy.spin_once(astr_pub)
+        # rclpy.spin_once()
+        # rclpy.spin_once(pc_pub)
+        # rclpy.spin_once(tf_pub)
+        while position_error(cmd_pose, astr_sub.pose, arm_tf) > 0.001 or orientation_error(cmd_pose, astr_sub.pose, arm_tf) > np.deg2rad(10):
             rclpy.spin_once(astr_sub)
             rclpy.spin_once(speed_sub)
-            rclpy.spin_once(pc_pub)
-            rclpy.spin_once(tf_pub)
-            astr_pub.loop_rate.sleep()
+
 
     # DO NOT SET VELOCITY TO 0 OR IDLE MODE
     astr_pub.set_command(cmd_pose, 3, arm_tf)

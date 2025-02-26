@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R, Slerp, RotationSpline
+from scipy.interpolate import make_splprep
 from geometry_msgs.msg import Pose, Point, TransformStamped
 from tf2_geometry_msgs import do_transform_pose
 
@@ -57,16 +58,14 @@ class Trajectory:
         # compute the tangent at each point, projected onto the tangent plane
         self.projected_tangents = np.zeros((len(self.points[1:-1]), 3))
         self.tangents = -np.diff(self.points[1:-1], axis=0)
-        self.tangents = np.vstack([self.tangents, self.tangents[-1]])
-        # smooth the tangents with a moving average
-        for i in range(len(self.tangents) - 1):
-            self.tangents[i] = (self.tangents[i] + self.tangents[i+1]) / 2
         self.tangents = np.vstack([self.tangents[0], self.tangents])
         self.tangents /= np.linalg.norm(self.tangents, axis=1)[:, None]
-
         for i in range(len(self.projected_tangents)):
             self.projected_tangents[i] = self.tangents[i] - np.dot(self.tangents[i], self.normals[i]) * self.normals[i]
-            # self.projected_tangents[i] /= np.linalg.norm(self.projected_tangents[i])
+            self.projected_tangents[i] /= np.linalg.norm(self.projected_tangents[i])
+
+        # for i in range(1, len(self.projected_tangents)):
+        #     self.projected_tangents[i] = 0.1 * self.projected_tangents[i] + 0.9 * self.projected_tangents[i-1]
 
     def _compute_pose(self):
         # for each point, compute the orientation of the end effector in the global frame that would align the z-axis with the normal and best align the x-axis with the tangent
@@ -101,7 +100,7 @@ class Trajectory:
         # self.poses[0].orientation = self.poses[1].orientation
         # self.poses[-1].orientation = self.poses[-1].orientation
         self._smooth_poses()
-        self._interpolate_poses()
+        # self._interpolate_poses()
 
     def _interpolate_poses(self):
         # interpolate between poses

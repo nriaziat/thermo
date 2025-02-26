@@ -12,6 +12,8 @@ from tf2_geometry_msgs import do_transform_pose, TransformStamped, do_transform_
 from .Trajectory import Trajectory
 import numpy as np
 import rclpy
+from filterpy.kalman import KalmanFilter
+from filterpy.common import Q_discrete_white_noise
 
 class LoggingDataPublisher(Node):
     def __init__(self):
@@ -19,7 +21,8 @@ class LoggingDataPublisher(Node):
         self.publisher_ = self.create_publisher(LoggingData, '/thermo/logging_data', 10)
         self.logging_data = LoggingData()
 
-    def set_logging_data(self, pose: Pose, 
+    def set_logging_data(self, *,
+                         pose: Pose, 
                          width_mm: float,
                          cmd_speed_mm_s: float,
                          meas_speed_mm_s: float,
@@ -29,20 +32,20 @@ class LoggingDataPublisher(Node):
                          q: float,
                          cp: float,
                          lambda_thermal: float,
-                            rho: float):
+                         rho: float):
             
         self.logging_data.header.stamp = self.get_clock().now().to_msg()
         self.logging_data.pose = pose
-        self.logging_data.width_mm = width_mm
-        self.logging_data.cmd_speed_mm_s = cmd_speed_mm_s
-        self.logging_data.meas_speed_mm_s = meas_speed_mm_s
-        self.logging_data.vstar_mm_s = vstar_mm_s
-        self.logging_data.deflection_mm = defl_mm
-        self.logging_data.c_defl = c_defl
-        self.logging_data.q = q
-        self.logging_data.cp = cp
-        self.logging_data.lambda_thermal = lambda_thermal
-        self.logging_data.rho = rho
+        self.logging_data.width_mm = float(width_mm)
+        self.logging_data.cmd_speed_mm_s = float(cmd_speed_mm_s)
+        self.logging_data.meas_speed_mm_s = float(meas_speed_mm_s)
+        self.logging_data.vstar_mm_s = float(vstar_mm_s)
+        self.logging_data.deflection_mm = float(defl_mm)
+        self.logging_data.c_defl = float(c_defl)
+        self.logging_data.q = float(q)
+        self.logging_data.cp = float(cp)
+        self.logging_data.lambda_thermal = float(lambda_thermal)
+        self.logging_data.rho = float(rho)
 
     def publish_logging_data(self):
         self.publisher_.publish(self.logging_data)
@@ -150,7 +153,7 @@ class ASTRCartesianCommandPublisher(Node):
         else:
             self.command.motion_mode.mode_enum = AstrCartesianMotionMode.IDLE
         self.command.motion_mode.requested_lin_vel_m_s = float(velocity * 1e-3)
-        self.command.motion_mode.requested_ang_vel_deg_s = 100.
+        self.command.motion_mode.requested_ang_vel_deg_s = 50.
 
     def publish_command(self):
         self.publisher_.publish(self.command)
@@ -162,13 +165,35 @@ class ASTRFeedbackSubscriber(Node):
         self.subscription  # prevent unused variable warning
         self.pose = Pose()
         self.twist = np.array([0, 0, 0])
+        self.dt = 1/25
+        self.kf_init = False
+        self.kf = KalmanFilter(dim_x=6, dim_z=6)
+        self.kf.x = np.array([0, 0, 0, 0, 0, 0])
+        self.kf.H = np.eye(len(self.kf.x))
+        self.kf.F = np.array([[1, self.dt, 0, 0, 0, 0], 
+                              [0, 1, 0, 0, 0, 0],
+                              [0, 0, 1, self.dt, 0, 0], 
+                              [0, 0, 0, 1, 0, 0],
+                              [0, 0, 0, 0, 1, self.dt],
+                              [0, 0, 0, 0, 0, 1]])
+        self.kf.P  = np.diag([0.01, 16, 0.01, 16, 0.01, 16])
+        self.kf.R  = np.diag([0.03**2, 16, 0.03**2, 4, 0.03**2, 16])
+        self.kf.Q  = Q_discrete_white_noise(dim=2, dt=self.dt, var=16, block_size=3)
 
     def listener_callback(self, msg: AstrFeedback):
         self.pose = msg.actual_cartesian_position
         self.twist = np.array([msg.actual_cartesian_velocity.linear.x, msg.actual_cartesian_velocity.linear.y, msg.actual_cartesian_velocity.linear.z])
+        z = np.array([self.pose.position.x, self.twist[0], self.pose.position.y, self.twist[1], self.pose.position.z, self.twist[2]])
+        if not self.kf_init:
+            self.kf.x = z * 1000
+            self.kf_init = True
+        else:
+            self.kf.predict()
+            self.kf.update(1000 * z)
 
     def get_speed_m_s(self):
-        return np.linalg.norm(self.twist)
+        return np.linalg.norm([self.kf.x[1], self.kf.x[3], self.kf.x[5]]) / 1000
+        # return np.linalg.norm(self.twist)
 
 class FrameListener(Node):
 

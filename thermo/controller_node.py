@@ -1,16 +1,16 @@
 from scipy.spatial.transform import Rotation as R
 from .ParameterEstimation import *
-from thermo.thermo.trajectory_planner import Parameters, RunConfig
+from .trajectory_planner import Parameters
 from .ROS import SpeedPublisher, ASTRFeedbackSubscriber, LoggingDataPublisher
 from .T3pro import T3pro
 from .models import hydrogelPhantom, humanTissue, SteadyStateMinimizationModel
 from .utils import thermal_frame_to_color, cv_isotherm_width, find_tooltip, draw_info_on_frame
-from copy import deepcopy
 import rclpy
 from dataclasses import dataclass
 from enum import Enum
 import json 
 import click
+import cv2 as cv
 
 class ControlMode(str, Enum):
     AUTONOMOUS = 'AUTONOMOUS'
@@ -116,12 +116,11 @@ def main(params_path: str):
     material = hydrogelPhantom
     model = SteadyStateMinimizationModel(qw=1, qd=1, r=1)
 
-    run_conf = RunConfig(
-        control_mode=ControlMode.CONSTANT_VELOCITY,
-        adaptive_velocity=True,
-        log_save_dir='./thermo_logs',
-        material=material,
-    )
+    # run_conf = RunConfig(
+    #     control_mode=ControlMode.CONSTANT_VELOCITY,
+    #     adaptive_velocity=True,
+    #     log_save_dir='./thermo_logs'
+    # )
 
     t3 = T3pro()
     ret, raw_frame = t3.read()
@@ -136,7 +135,6 @@ def main(params_path: str):
     log_pub = LoggingDataPublisher()
 
     ## Initialize the parameter adaptation
-    material = deepcopy(run_conf.material)
 
     therm_adaptation = ThermalAdaptation(np.array([0, 40, material.Cp, material.rho * 1e9, material.k * 1e3]), labels=['w', 'P', 'Cp', 'rho', 'k'],
                                            material=material)
@@ -144,7 +142,7 @@ def main(params_path: str):
                                                  labels=['x', 'y', 'x_dot', 'y_dot', 'x_rest', 'y_rest', 'c_defl'],
                                                  px_per_mm=params.thermal_px_per_mm, frame_size_px=params.frame_size_px)
     defl_adaptation.init = False
-    vstar = 7  # nominal velocity [mm/s]
+    vstar = 7.  # nominal velocity [mm/s]
 
     while True:
         ur_speed_mm_s = astr_sub.get_speed_m_s() * 1000
@@ -153,15 +151,21 @@ def main(params_path: str):
             break
         _, lut = t3.info()
         thermal_arr = lut[raw_frame]
-        # color_frame = thermal_frame_to_color(thermal_arr)   
+        # color_frame = thermal_frame_to_color(thermal_arr)  
+        # cv.imshow("therm frame", color_frame)
+        # if ((key := 0xFF & cv.waitKey(1)) == ord("q")):
+        #     break
 
         try:
-            u0, defl_mm, w_mm, init_mpc, tip_neutral_px = update(params, model, material,
-                                                                tip_neutral_px, defl_adaptation,
-                                                                therm_adaptation, ur_speed_mm_s, thermal_arr,
-                                                                vstar=vstar)
-        except ValueError:
-            print("Covariance error, ending.")
+            # u0, defl_mm, w_mm, tip_neutral_px = update(params, model, material,
+            #                                                     tip_neutral_px, defl_adaptation,
+            #                                                     therm_adaptation, ur_speed_mm_s, thermal_arr,
+            #                                                     vstar=vstar)
+            u0 = 3
+            defl_mm = 0
+            w_mm = 0
+        except ValueError as e:
+            print(f"Covariance error, ending. {e}")
             break
 
         speed_pub.set_speed(u0)
@@ -176,7 +180,7 @@ def main(params_path: str):
             break
         
         pose = astr_sub.pose
-        log_pub.publish_data(pose=pose,
+        log_pub.set_logging_data(pose=pose,
                              width_mm=w_mm,
                              cmd_speed_mm_s=u0,
                              meas_speed_mm_s=ur_speed_mm_s,
@@ -187,9 +191,8 @@ def main(params_path: str):
                              cp=therm_adaptation.Cp,
                              lambda_thermal=therm_adaptation.lambda_therm,
                              rho=therm_adaptation.rho)
+
         log_pub.publish_logging_data()
-        rclpy.spin_once(log_pub)
         rclpy.spin_once(astr_sub)
-        rclpy.spin_once(speed_pub)
     
     astr_sub.destroy_node()
