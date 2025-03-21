@@ -105,6 +105,7 @@ def Tc(dT: float, material: MaterialProperties, q: float, d: float):
     """
     return 2 * np.pi * material.k * d * dT / q
 
+porcineKidney = MaterialProperties(_rho=1090e-9, _Cp=3800, _k=0.56e-3)
 humanTissue = MaterialProperties(_rho=1090e-9, _Cp=3421, _k=0.46e-3)
 hydrogelPhantom = MaterialProperties(_rho=1310e-9, _Cp=3140, _k=0.6e-3)
 
@@ -114,7 +115,7 @@ def cut_force_model(v: float, c_defl: float) -> float:
     :param v: velocity [mm/s]
     :param c_defl: deflection rate [mm/s]
     """
-    return 20 * np.exp(-c_defl / v)
+    return 10 * np.exp(-c_defl / v)
 
 def isotherm_width_model(material: MaterialProperties,
                          v: float, q: float, dT: float) -> float:
@@ -131,9 +132,9 @@ def isotherm_width_model(material: MaterialProperties,
 
 class ElectrosurgeryCostMinimizationModel(ABC):
 
-    def __init__(self):
-        self.vmin = 0
-        self.vmax = 10
+    def __init__(self, vmin: float, vmax: float):
+        self.vmin = vmin
+        self.vmax = vmax
 
     @abstractmethod
     def find_optimal_velocity(self, *args) -> np.ndarray:
@@ -148,9 +149,9 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
     t_death: float = 60  # death temperature [C]
     Ta: float = 20 # ambient temperature [C]
 
-    def __init__(self,
-                 qw = 1, qd = 1, r = 0.1):
-        super().__init__()
+    def __init__(self, vmin: float, vmax: float,
+                 qw = 1, qd = 1, r = 0.1, ):
+        super().__init__(vmin, vmax)
         self._isotherm_measurement_mm = 0
         self._deflection_measurement_mm = 0
         self._P = 40
@@ -174,7 +175,7 @@ class SteadyStateMinimizationModel(ElectrosurgeryCostMinimizationModel):
         """
         dT = self.t_death - self.Ta
         return (self.qw * isotherm_width_model(material, v, q, dT) + self.qd * cut_force_model(v, c_defl) +
-                self.r * 0 * (v-self._u0) ** 2 + self.r * np.max([0, vstar - v]) ** 2)
+                self.r * 0.01 * (v-self._u0) ** 2 + self.r * np.max([0, vstar - v]) ** 2)
 
     def find_optimal_velocity(self, material: MaterialProperties,
                               c_defl: float,

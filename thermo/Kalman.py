@@ -1,26 +1,47 @@
-from filterpy.kalman import UnscentedKalmanFilter, MerweScaledSigmaPoints, ExtendedKalmanFilter, unscented_transform
+from filterpy.kalman import (
+    UnscentedKalmanFilter,
+    MerweScaledSigmaPoints,
+    ExtendedKalmanFilter,
+    unscented_transform,
+)
 import numpy as np
 import scipy
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from numpy import eye, dot, isscalar
 
+
 class TruncatedUnscentedKalmanFilter(UnscentedKalmanFilter):
-    def __init__(self, dim_x, dim_z, dt, hx, fx, points,
-                 low_bound: np.ndarray=None, high_bound: np.ndarray=None):
+    def __init__(
+        self,
+        dim_x,
+        dim_z,
+        dt,
+        hx,
+        fx,
+        points,
+        low_bound: np.ndarray = None,
+        high_bound: np.ndarray = None,
+    ):
         super().__init__(dim_x, dim_z, dt, hx, fx, points)
         if low_bound is None:
-            self.low_bound = np.array([-np.inf]*dim_x)
+            self.low_bound = np.array([-np.inf] * dim_x)
         else:
             self.low_bound = low_bound
         if high_bound is None:
-            self.high_bound = np.array([np.inf]*dim_x)
+            self.high_bound = np.array([np.inf] * dim_x)
         else:
             self.high_bound = high_bound
 
-        assert len(self.low_bound) == dim_x, "Lower bound must be the same length as the state vector"
-        assert len(self.high_bound) == dim_x, "Upper bound must be the same length as the state vector"
-        assert (self.low_bound < self.high_bound).all(), "Lower bound must be less than upper bound"
+        assert (
+            len(self.low_bound) == dim_x
+        ), "Lower bound must be the same length as the state vector"
+        assert (
+            len(self.high_bound) == dim_x
+        ), "Upper bound must be the same length as the state vector"
+        assert (
+            self.low_bound < self.high_bound
+        ).all(), "Lower bound must be less than upper bound"
         self.eta = 0  # sensitivity parameter
         self.alpha = 1  # forgetting factor
         self.x, self.P = self.PDF_truncation(self.x, self.P)
@@ -51,7 +72,7 @@ class TruncatedUnscentedKalmanFilter(UnscentedKalmanFilter):
         """
 
         if z is None:
-            self.z = np.array([[None]*self._dim_z]).T
+            self.z = np.array([[None] * self._dim_z]).T
             self.x_post = self.x.copy()
             self.P_post = self.P.copy()
             return
@@ -77,19 +98,19 @@ class TruncatedUnscentedKalmanFilter(UnscentedKalmanFilter):
         self.sigmas_h = np.atleast_2d(sigmas_h)
 
         # mean and covariance of prediction passed through unscented transform
-        zp, self.S = UT(self.sigmas_h, self.Wm, self.Wc, R, self.z_mean, self.residual_z)
+        zp, self.S = UT(
+            self.sigmas_h, self.Wm, self.Wc, R, self.z_mean, self.residual_z
+        )
         self.SI = self.inv(self.S)
 
         # compute cross variance of the state and the measurements
         Pxz = self.cross_variance(self.x, zp, self.sigmas_f, self.sigmas_h)
 
-        self.K = dot(Pxz, self.SI)        # Kalman gain
-        self.y = self.residual_z(z, zp)   # residual
-
+        self.K = dot(Pxz, self.SI)  # Kalman gain
+        self.y = self.residual_z(z, zp)  # residual
 
         # update Gaussian state estimate (x, P)
         self.x = self.x + dot(self.K, self.y)
-
 
         self.eta = self.y.T @ self.SI @ self.y
 
@@ -100,7 +121,6 @@ class TruncatedUnscentedKalmanFilter(UnscentedKalmanFilter):
         #     self.alpha = 1
 
         self.alpha = 1
-
 
         self.P = (self.P - dot(self.K, dot(self.S, self.K.T))) / self.alpha
 
@@ -119,7 +139,9 @@ class TruncatedUnscentedKalmanFilter(UnscentedKalmanFilter):
     def PDF_truncation(self, x, P):
         xt = x
         epsilon = 1e-9
-        Pt = 1/2 * (P + P.T) + epsilon * np.eye(P.shape[0])  # Ensure P is symmetric and positive definite
+        Pt = 1 / 2 * (P + P.T) + epsilon * np.eye(
+            P.shape[0]
+        )  # Ensure P is symmetric and positive definite
         n = self.points_fn.n
         for i in range(n):
             Pt[np.isclose(Pt, 0)] = 0
@@ -132,63 +154,91 @@ class TruncatedUnscentedKalmanFilter(UnscentedKalmanFilter):
             theta = np.zeros((n, n))
             for l in range(n):
                 if l == 0:
-                    theta[l, :] = 1 / (np.sqrt(Pt[i, i])) * (S[i:i + 1, :] @ sqrtD)
+                    theta[l, :] = 1 / (np.sqrt(Pt[i, i])) * (S[i : i + 1, :] @ sqrtD)
                 else:
-                    el = np.eye(n)[:, l:l + 1]
+                    el = np.eye(n)[:, l : l + 1]
                     theta[l, :] = (
-                            el - np.sum([(el.T @ theta.T[:, q:q + 1]) * theta.T[:, q:q + 1] for q in range(l)],
-                                        axis=0)).T
+                        el
+                        - np.sum(
+                            [
+                                (el.T @ theta.T[:, q : q + 1]) * theta.T[:, q : q + 1]
+                                for q in range(l)
+                            ],
+                            axis=0,
+                        )
+                    ).T
                     if (theta[l, :] == 0).all():
                         el = np.eye(n)[:, 0:1]
                         theta[l, :] = (
-                                el - np.sum([(el.T @ theta.T[:, q:q + 1]) * theta.T[:, q:q + 1] for q in range(l)],
-                                            axis=0)).T
+                            el
+                            - np.sum(
+                                [
+                                    (el.T @ theta.T[:, q : q + 1])
+                                    * theta.T[:, q : q + 1]
+                                    for q in range(l)
+                                ],
+                                axis=0,
+                            )
+                        ).T
                     theta[l, :] /= np.linalg.norm(theta[l, :])
             aki = 1 / np.sqrt(Pt[i, i]) * (self.low_bound[i] - xt[i])
             bki = 1 / np.sqrt(Pt[i, i]) * (self.high_bound[i] - xt[i])
             # zki = theta @ invSqrtD @ S.T @ (self.x - xt)
-            alpha_i = (2 ** 0.5 )/ (
-                    (np.pi ** 0.5) * scipy.special.erf(bki / (2 ** 0.5)) - scipy.special.erf(aki / (2 ** 0.5)))
-            mu_i = alpha_i * (np.exp(-aki ** 2 / 2) - np.exp(-bki ** 2 / 2))
-            A = np.exp(-(aki ** 2) / 2) * (aki - 2 * mu_i) if not np.isinf(-aki) else 0
-            B = np.exp(-(bki ** 2) / 2) * (bki - 2 * mu_i) if not np.isinf(bki) else 0
-            sigma2_i = alpha_i * (A - B) + mu_i ** 2 + 1
+            alpha_i = (2**0.5) / (
+                (np.pi**0.5) * scipy.special.erf(bki / (2**0.5))
+                - scipy.special.erf(aki / (2**0.5))
+            )
+            mu_i = alpha_i * (np.exp(-(aki**2) / 2) - np.exp(-(bki**2) / 2))
+            A = np.exp(-(aki**2) / 2) * (aki - 2 * mu_i) if not np.isinf(-aki) else 0
+            B = np.exp(-(bki**2) / 2) * (bki - 2 * mu_i) if not np.isinf(bki) else 0
+            sigma2_i = alpha_i * (A - B) + mu_i**2 + 1
             Pzz = np.eye(n)
             Pzz[0, 0] = sigma2_i
             zki_bar = np.zeros((n, 1))
             zki_bar[0] = mu_i
             xt = (S @ sqrtD @ theta.T @ zki_bar).reshape(n) + xt
             Pt = S @ sqrtD @ theta.T @ Pzz @ theta @ sqrtD @ S.T
-            Pt = 1 / 2 * (Pt + Pt.T) + epsilon * np.eye(Pt.shape[0])  # Ensure P is symmetric and positive definite
+            Pt = 1 / 2 * (Pt + Pt.T) + epsilon * np.eye(
+                Pt.shape[0]
+            )  # Ensure P is symmetric and positive definite
         return xt, Pt
 
 
 class UKFIdentification(ABC):
-    def __init__(self, w0: np.array, dim_z: int, labels: list[str], lower_bounds: np.ndarray = None,
-                 upper_bounds: np.ndarray = None):
+    def __init__(
+        self,
+        w0: np.array,
+        dim_z: int,
+        labels: list[str],
+        lower_bounds: np.ndarray = None,
+        upper_bounds: np.ndarray = None,
+    ):
         """
         :param w0: Initial parameter estimate
         """
         n = len(w0)
-        assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
+        assert len(labels) == len(
+            w0
+        ), "Labels must be the same length as the parameter estimate"
         self._labels = labels
 
-        self.points = MerweScaledSigmaPoints(n=n,
-                                             alpha=1e-3,
-                                             beta=2,
-                                             kappa=0)
+        self.points = MerweScaledSigmaPoints(n=n, alpha=1e-3, beta=2, kappa=0)
 
-        self.kf = TruncatedUnscentedKalmanFilter(dim_x=n,
-                                                 dim_z=dim_z,
-                                                 dt=1/24,
-                                                 hx=self.hx,
-                                                 fx=self.fx,
-                                                 points=self.points,
-                                                 low_bound=lower_bounds,
-                                                 high_bound=upper_bounds)
+        self.kf = TruncatedUnscentedKalmanFilter(
+            dim_x=n,
+            dim_z=dim_z,
+            dt=1 / 24,
+            hx=self.hx,
+            fx=self.fx,
+            points=self.points,
+            low_bound=lower_bounds,
+            high_bound=upper_bounds,
+        )
 
         self.kf.x = w0
-        self._data = {label: [(w0[i], w0[i], w0[i])] for i, label in enumerate(self.labels)}
+        self._data = {
+            label: [(w0[i], w0[i], w0[i])] for i, label in enumerate(self.labels)
+        }
         self._x_hist = []
 
     @property
@@ -212,7 +262,6 @@ class UKFIdentification(ABC):
         """
         pass
 
-
     def update(self, measurement, **kwargs) -> tuple:
         """
         Update the adaptive parameters
@@ -222,8 +271,13 @@ class UKFIdentification(ABC):
         """
         self.kf.predict(**kwargs)
         self.kf.update(z=measurement, **kwargs)
-        ci_low, ci_high = self.x - np.sqrt(np.diag(self.kf.P)), self.x + np.sqrt(np.diag(self.kf.P))
-        self._data = {label: self._data[label] + [(ci_low[i], self.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
+        ci_low, ci_high = self.x - np.sqrt(np.diag(self.kf.P)), self.x + np.sqrt(
+            np.diag(self.kf.P)
+        )
+        self._data = {
+            label: self._data[label] + [(ci_low[i], self.x[i], ci_high[i])]
+            for i, label in enumerate(self.labels)
+        }
         self._x_hist.append(self.x)
         self.update_bounds()
         return self.kf.x
@@ -250,20 +304,30 @@ class UKFIdentification(ABC):
         """
         pass
 
+
 class EKFIdentification(ABC):
-    def __init__(self, w0: np.array, dim_z: int, labels: list[str], lower_bounds: np.ndarray = -np.inf,
-                 upper_bounds: np.ndarray = np.inf):
+    def __init__(
+        self,
+        w0: np.array,
+        dim_z: int,
+        labels: list[str],
+        lower_bounds: np.ndarray = -np.inf,
+        upper_bounds: np.ndarray = np.inf,
+    ):
         """
         :param w0: Initial parameter estimate
         """
         n = len(w0)
-        assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
+        assert len(labels) == len(
+            w0
+        ), "Labels must be the same length as the parameter estimate"
         self._labels = labels
 
-        self.kf = ExtendedKalmanFilter(dim_x=n,
-                                       dim_z=dim_z)
+        self.kf = ExtendedKalmanFilter(dim_x=n, dim_z=dim_z)
         self.kf.x = w0
-        self._data = {label: [(w0[i], w0[i], w0[i])] for i, label in enumerate(self.labels)}
+        self._data = {
+            label: [(w0[i], w0[i], w0[i])] for i, label in enumerate(self.labels)
+        }
 
     @property
     def labels(self) -> list[str]:
@@ -310,8 +374,13 @@ class EKFIdentification(ABC):
         u = kwargs.get("v")
         self.kf.predict_x(u=u)
         self.kf.update(measurement, HJacobian=self.HJacobian, Hx=self.hx)
-        ci_low, ci_high = self.kf.x - np.sqrt(np.diag(self.kf.P)), self.kf.x + np.sqrt(np.diag(self.kf.P))
-        self._data = {label: self._data[label] + [(ci_low[i], self.kf.x[i], ci_high[i])] for i, label in enumerate(self.labels)}
+        ci_low, ci_high = self.kf.x - np.sqrt(np.diag(self.kf.P)), self.kf.x + np.sqrt(
+            np.diag(self.kf.P)
+        )
+        self._data = {
+            label: self._data[label] + [(ci_low[i], self.kf.x[i], ci_high[i])]
+            for i, label in enumerate(self.labels)
+        }
         self.update_bounds()
         return self.kf.x
 

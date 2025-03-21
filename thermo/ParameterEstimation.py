@@ -1,31 +1,63 @@
 from .Kalman import UKFIdentification
 from filterpy.common import Q_discrete_white_noise
 import numpy as np
-from thermo.models import MaterialProperties, isotherm_width_model, cut_force_model
+from .models import MaterialProperties, isotherm_width_model, cut_force_model
+
 
 class DeflectionAdaptation(UKFIdentification):
-    def __init__(self, w0: np.array,
-                 labels: list[str],
-                 px_per_mm:float= 1,
-                 frame_size_px=(384, 288)):
+    def __init__(
+        self,
+        w0: np.array,
+        labels: list[str],
+        px_per_mm: float = 1,
+        frame_size_px=(384, 288),
+    ):
         """
-        :param w0: Initial parameter estimate [x, y, xd, yd, x_rest, y_rest, c_defl, k_tool, d_defl] in mm, mm/s, mm, mm, mm, mm, N/mm, N/mm, mm/s
+        :param w0: Initial parameter estimate [x, y, xd, yd, x_rest, y_rest, c_defl] in mm, mm/s, mm, mm, mm, mm, N/mm, N/mm, mm/s
         :param labels: List of parameter labels
         :param px_per_mm: Pixels per mm in the thermal frame
-        :frame_size_px: Size of the thermal frame in pixels [width, height]
+        :param frame_size_px: Size of the thermal frame in pixels [width, height]
+        :param direction: + for ccw, - for cw
         """
-        super().__init__(w0, dim_z=2, labels=labels, lower_bounds=np.array([0, 0, -np.inf, -np.inf, 0, 0, 0]),
-                         upper_bounds=np.array([frame_size_px[0] / px_per_mm, frame_size_px[1] / px_per_mm, np.inf, np.inf, frame_size_px[0] / px_per_mm, frame_size_px[1] / px_per_mm, np.inf]))
-        assert len(labels) == len(w0), "Labels must be the same length as the parameter estimate"
-        self.kf.P = np.diag([2**2, 2**2, 5, 5, 8**2, 8**2, 1])
+
+        super().__init__(
+            w0,
+            dim_z=2,
+            labels=labels,
+            lower_bounds=np.array([0, 0, -np.inf, -np.inf, 0, 0, 0]),
+            upper_bounds=np.array(
+                [
+                    frame_size_px[0] / px_per_mm,
+                    frame_size_px[1] / px_per_mm,
+                    np.inf,
+                    np.inf,
+                    frame_size_px[0] / px_per_mm,
+                    frame_size_px[1] / px_per_mm,
+                    np.inf,
+                ]
+            ),
+        )
+        assert len(labels) == len(
+            w0
+        ), "Labels must be the same length as the parameter estimate"
+        self.kf.P = np.diag([2**2, 2**2, 5, 5, 1.2**2, 1.2**2, 1])
         self.kf.R = np.diag([1.2**2, 1.2**2])
-        self.kf.Q = np.block([[Q_discrete_white_noise(dim=2, dt=1/24, var=6**2, block_size=2, order_by_dim=False), np.zeros((4, 3))],
-                               [np.zeros((3, 4)), np.diag([0.001**2, 0.001**2, 1**2])]])
+        self.kf.Q = np.block(
+            [
+                [
+                    Q_discrete_white_noise(
+                        dim=2, dt=1 / 24, var=6**2, block_size=2, order_by_dim=False
+                    ),
+                    np.zeros((4, 3)),
+                ],
+                [np.zeros((3, 4)), np.diag([0.05**2, 0.05**2, 0.1**2])],
+            ]
+        )
 
     @property
     def x(self):
         """
-        Estimated state vector [x, y, xd, yd, x_rest, y_rest, c_defl, k_tool] in mm, mm/s, mm, mm, mm, mm, N/mm, N/mm
+        Estimated state vector [x, y, xd, yd, x_rest, y_rest, c_defl] in mm, mm/s, mm, mm, mm, mm, N/mm, N/mm
         """
         x = self.kf.x
         return x
@@ -53,7 +85,7 @@ class DeflectionAdaptation(UKFIdentification):
         """
         mu = self.kf.x[0:2] - self.kf.x[4:6]
         P = self.kf.P[0:2, 0:2] + self.kf.P[4:6, 4:6]
-        EX2  = np.linalg.norm(mu) ** 2 + np.trace(P)
+        EX2 = np.linalg.norm(mu) ** 2 + np.trace(P)
         VarX2 = 2 * np.trace(P @ P) + 4 * mu.T @ P @ mu
         varX = VarX2 / (4 * EX2)
         return np.sqrt(varX)
@@ -93,11 +125,11 @@ class DeflectionAdaptation(UKFIdentification):
         assert d > 0, "d must be positive, but is {}".format(d)
         defl = x[0:2] - x[4:6]
         v_net = v * np.array([1, 0]) + x[2:4]
-        kx = 10 if defl[0] > 0 else 3
-        ky = 5 if defl[1] > 0 else 1.5
+        kx = 1
+        ky = 1
         defl_force = -kx * defl[0] - ky * defl[1]
         cut_force = cut_force_model(v, d)
-        F = defl_force - (cut_force * np.array([1, 0])) - (1 * x[2:4])
+        F = defl_force - (cut_force * np.array([1, 0])) # - (0.1 * x[2:4])
         x[0] += x[2] * dt
         x[1] += x[3] * dt
         x[2:4] += F * dt
@@ -114,10 +146,12 @@ class ThermalAdaptation(UKFIdentification):
         """
         :param w0: Initial parameter estimate  [w, q, Cp, rho, k] in mm, mm/s, W, J/kgK
         """
-        super().__init__(w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0, 0, 0, 0]))
-        self.kf.P = np.diag([1, 5, 25 ** 2, 25 ** 2, 1])
-        self.kf.R = 0.5 ** 2
-        self.kf.Q = np.diag([1, 9, 25 ** 2, 25 ** 2, 1])
+        super().__init__(
+            w0, dim_z=1, labels=labels, lower_bounds=np.array([0, 0, 0, 0, 0])
+        )
+        self.kf.P = np.diag([1, 5, 25**2, 25**2, 1])
+        self.kf.R = 0.5**2
+        self.kf.Q = np.diag([1, 9, 25**2, 5**2, 1])
 
     @property
     def x(self) -> np.array:
@@ -158,7 +192,7 @@ class ThermalAdaptation(UKFIdentification):
         """
         Standard deviation of the thermal width [mm].
         """
-        return np.sqrt(self.kf.P[0,0])
+        return np.sqrt(self.kf.P[0, 0])
 
     def hx(self, x, **kwargs):
         """

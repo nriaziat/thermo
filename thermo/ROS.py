@@ -1,7 +1,7 @@
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Float32MultiArray, MultiArrayDimension, Int16
 from geometry_msgs.msg import Pose, Point32, PointStamped # for position and velocity of ASTR
-from sensor_msgs.msg import Image, PointCloud  # for thermal image
+from sensor_msgs.msg import PointCloud  # for trajectory visualization
 from astr_msgs.msg import AstrCartesianCommand, AstrFeedback, AstrCartesianMotionMode
 from thermo_msgs.msg import LoggingData
 from tf2_ros.transform_listener import TransformListener
@@ -15,11 +15,54 @@ import rclpy
 from filterpy.kalman import KalmanFilter
 from filterpy.common import Q_discrete_white_noise
 
+class LogReplayer(Node):
+    def __init__(self):
+        super().__init__('logging_data_player')
+        self.publisher_ = self.create_subscription(LoggingData, '/thermo/logging_data', self.replay_callback, 10)
+        self.therm_arr = None
+        self.robot_pose = Pose()
+        self.meas_speed_mm_s = 0
+        self.data_ready = False
+
+    def replay_callback(self, msg: LoggingData):
+        self.data_ready = True
+        self.therm_arr = np.array(msg.thermal_arr.data).reshape((msg.thermal_arr.layout.dim[0].size, msg.thermal_arr.layout.dim[1].size))
+        self.robot_pose = msg.pose
+        self.meas_speed_mm_s = msg.meas_speed_mm_s
+
+    def get_data(self):
+        self.data_ready = False
+        return self.therm_arr, self.robot_pose, self.meas_speed_mm_s
+
+class DirectionPublisher(Node):
+    def __init__(self):
+        super().__init__('direction_publisher')
+        self.publisher_ = self.create_publisher(Int16, '/thermo/direction', 10)
+        self.direction = None  # 1 for ccw, -1 for cw or True for ccw, False for cw
+
+    def set_direction(self, direction: int):
+        self.direction = direction
+
+    def publish_direction(self):
+        msg = Int16()
+        msg.data = self.direction
+        self.publisher_.publish(msg)
+
+class DirectionSubscriber(Node):
+    def __init__(self):
+        super().__init__('direction_subscriber')
+        self.subscription = self.create_subscription(Int16, '/thermo/direction', self.listener_callback, 10)
+        self.subscription  # prevent unused variable warning
+        self.direction = None
+
+    def listener_callback(self, msg: Int16):
+        self.direction = msg.data  # 1 for ccw, -1 for cw, 0 for stop
+
 class LoggingDataPublisher(Node):
     def __init__(self):
         super().__init__('logging_data_publisher')
         self.publisher_ = self.create_publisher(LoggingData, '/thermo/logging_data', 10)
-        self.logging_data = LoggingData()
+        self.logging_data: LoggingData = LoggingData()
 
     def set_logging_data(self, *,
                          pose: Pose, 
@@ -32,8 +75,20 @@ class LoggingDataPublisher(Node):
                          q: float,
                          cp: float,
                          lambda_thermal: float,
-                         rho: float):
-            
+                         rho: float, 
+                         thermal_arr: np.array):
+        
+        multiarr = Float32MultiArray()
+        multiarr.data = thermal_arr.flatten().tolist()
+        multiarr.layout.dim.append(MultiArrayDimension())    
+        multiarr.layout.dim.append(MultiArrayDimension())
+        multiarr.layout.dim[0].label  = "height"
+        multiarr.layout.dim[0].size   = thermal_arr.shape[0]
+        multiarr.layout.dim[0].stride = thermal_arr.size
+        multiarr.layout.dim[1].label  = "width"
+        multiarr.layout.dim[1].size   = thermal_arr.shape[1]
+        multiarr.layout.dim[1].stride = thermal_arr.shape[1]
+
         self.logging_data.header.stamp = self.get_clock().now().to_msg()
         self.logging_data.pose = pose
         self.logging_data.width_mm = float(width_mm)
@@ -46,6 +101,7 @@ class LoggingDataPublisher(Node):
         self.logging_data.cp = float(cp)
         self.logging_data.lambda_thermal = float(lambda_thermal)
         self.logging_data.rho = float(rho)
+        self.logging_data.thermal_arr = multiarr
 
     def publish_logging_data(self):
         self.publisher_.publish(self.logging_data)
@@ -93,16 +149,15 @@ class PointCloudPublisher(Node):
         super().__init__('thermo_pc_pub')
         self.publisher_ = self.create_publisher(PointCloud, '/thermo/traj_pc', 10)
         self.pc = PointCloud()
-        self.pc.header.frame_id = 'electrocautery_arm_base_link'
+        self.pc.header.frame_id = 'world'
         self.loop_rate = self.create_rate(100)
 
-    def set_command(self, traj: Trajectory, tf: TransformStamped):
+    def set_command(self, traj: Trajectory):
         for i in range(len(traj)):
             pt = PointStamped()
             pt.point.x = float(traj.poses[i].position.x)
             pt.point.y = float(traj.poses[i].position.y)
             pt.point.z = float(traj.poses[i].position.z)
-            pt = do_transform_point(pt, tf)
             add_pt = Point32()
             add_pt.x = pt.point.x
             add_pt.y = pt.point.y
@@ -143,7 +198,7 @@ class ASTRCartesianCommandPublisher(Node):
         self.command = AstrCartesianCommand()
         self.loop_rate = self.create_rate(100)
 
-    def set_command(self, pose: Pose, velocity: float, tf: TransformStamped):
+    def set_command(self, pose: Pose, velocity: float, tf: TransformStamped, should_stop_here: bool = False):
         """
         @param velocity: velocity in mm/s
         """
@@ -153,7 +208,8 @@ class ASTRCartesianCommandPublisher(Node):
         else:
             self.command.motion_mode.mode_enum = AstrCartesianMotionMode.IDLE
         self.command.motion_mode.requested_lin_vel_m_s = float(velocity * 1e-3)
-        self.command.motion_mode.requested_ang_vel_deg_s = 50.
+        self.command.motion_mode.requested_ang_vel_deg_s = 60.
+        self.command.motion_mode.should_stop_here = should_stop_here
 
     def publish_command(self):
         self.publisher_.publish(self.command)
@@ -163,33 +219,36 @@ class ASTRFeedbackSubscriber(Node):
         super().__init__(f"astr_feedback_subscriber_{name}")
         self.subscription = self.create_subscription(AstrFeedback, '/electrocautery_arm/state_feedback', self.listener_callback, 10)
         self.subscription  # prevent unused variable warning
-        self.pose = Pose()
+        self.pose = None
         self.twist = np.array([0, 0, 0])
         self.dt = 1/25
         self.kf_init = False
-        self.kf = KalmanFilter(dim_x=6, dim_z=6)
+        self.kf = KalmanFilter(dim_x=6, dim_z=3)  # constant acceleration model
         self.kf.x = np.array([0, 0, 0, 0, 0, 0])
-        self.kf.H = np.eye(len(self.kf.x))
+        self.kf.H = np.array([[1, 0, 0, 0, 0, 0], 
+                              [0, 0, 1, 0, 0, 0], 
+                              [0, 0, 0, 0, 1, 0]]) 
         self.kf.F = np.array([[1, self.dt, 0, 0, 0, 0], 
                               [0, 1, 0, 0, 0, 0],
                               [0, 0, 1, self.dt, 0, 0], 
                               [0, 0, 0, 1, 0, 0],
                               [0, 0, 0, 0, 1, self.dt],
                               [0, 0, 0, 0, 0, 1]])
-        self.kf.P  = np.diag([0.01, 16, 0.01, 16, 0.01, 16])
-        self.kf.R  = np.diag([0.03**2, 16, 0.03**2, 4, 0.03**2, 16])
-        self.kf.Q  = Q_discrete_white_noise(dim=2, dt=self.dt, var=16, block_size=3)
+        self.kf.P  = np.diag([0.01, 9, 0.01, 9, 0.01, 9])
+        self.kf.R  = np.diag([0.01**2, 0.01**2, 0.01**2])
+        self.kf.Q  = Q_discrete_white_noise(dim=2, dt=self.dt, var=0.2**2, block_size=3)
+        self.joints = [] * 6
 
     def listener_callback(self, msg: AstrFeedback):
         self.pose = msg.actual_cartesian_position
-        self.twist = np.array([msg.actual_cartesian_velocity.linear.x, msg.actual_cartesian_velocity.linear.y, msg.actual_cartesian_velocity.linear.z])
-        z = np.array([self.pose.position.x, self.twist[0], self.pose.position.y, self.twist[1], self.pose.position.z, self.twist[2]])
+        z = np.array([self.pose.position.x, self.pose.position.y, self.pose.position.z])
         if not self.kf_init:
-            self.kf.x = z * 1000
+            self.kf.x = np.array([z[0],0, z[1], 0, z[2], 0])
             self.kf_init = True
         else:
             self.kf.predict()
             self.kf.update(1000 * z)
+        self.joints = msg.actual_joint_position
 
     def get_speed_m_s(self):
         return np.linalg.norm([self.kf.x[1], self.kf.x[3], self.kf.x[5]]) / 1000
@@ -202,20 +261,20 @@ class FrameListener(Node):
 
         # Declare and acquire `target_frame` parameter
         self.target_frame = self.declare_parameter(
-          'target_frame', 'electrocautery_arm_base_link').get_parameter_value().string_value
+          'target_frame', 'world').get_parameter_value().string_value
 
         self.tf_buffer = Buffer()
         self.transform = None
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # Call on_timer function every second
-        self.timer = self.create_timer(1.0, self.on_timer)
+        # Call on_timer function every 0.1 second
+        self.timer = self.create_timer(0.1, self.on_timer)
 
     def on_timer(self):
         # Store frame names in variables that will be used to
         # compute transformations
         from_frame_rel = self.target_frame
-        to_frame_rel = 'world'
+        to_frame_rel = 'electrocautery_arm_base_link'
 
         try:
             t: TransformStamped = self.tf_buffer.lookup_transform(
@@ -228,31 +287,3 @@ class FrameListener(Node):
             return
         
         self.transform = t
-
-class ColorImagePublisher(Node):
-    def __init__(self):
-        super().__init__('color_image_publisher')
-        self.publisher_ = self.create_publisher(Image, '/thermo/color_image', 10)
-        self.image = None
-
-    def set_image(self, image):
-        self.image = image
-
-    def publish_image(self):
-        msg = Image()
-        msg.data = self.image
-        self.publisher_.publish(msg)
-
-class ThermalImagePublisher(Node):
-    def __init__(self):
-        super().__init__('thermal_image_publisher')
-        self.publisher_ = self.create_publisher(Image, '/thermo/thermal_image', 10)
-        self.image = None
-
-    def set_image(self, image):
-        self.image = image
-
-    def publish_image(self):
-        msg = Image()
-        msg.data = self.image
-        self.publisher_.publish(msg)

@@ -66,7 +66,7 @@ def isotherm_width(t_frame: np.array, t_death: float) -> int:
     return np.max(np.sum(t_frame > t_death, axis=0))
 
 
-def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> (float, tuple | None):
+def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> tuple[float, tuple | None]:
     """
     Calculate the width of the isotherm using ellipse fitting
     :param t_frame: Temperature field [C]
@@ -75,17 +75,18 @@ def cv_isotherm_width(t_frame: np.ndarray, t_death: float) -> (float, tuple | No
     """
     blur_frame = cv.GaussianBlur(t_frame, (5, 5), 0)
     binary_frame = (blur_frame > t_death).astype(np.uint8)
-    contours, hierarchy = cv.findContours(binary_frame, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-    if len(contours) == 0:
-        return 0, None
-    ctr = max(contours, key=cv.contourArea)
-
-    hull = cv.convexHull(ctr)
-    if hull is None or len(hull) < 5:
-        return 0, None
-    ellipse = cv.fitEllipse(hull)
-    w = min(*ellipse[1]) / 2
-    return w, ellipse
+    dist_frame = cv.distanceTransform(binary_frame, cv.DIST_L2, 5)
+    # contours, hierarchy = cv.findContours(binary_frame, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+    # if len(contours) == 0:
+    #     return 0, None
+    # ctr = max(contours, key=cv.contourArea)
+    # hull = cv.convexHull(ctr)
+    # if hull is None or len(hull) < 5:
+    #     return 0, None
+    # ellipse = cv.fitEllipse(hull)
+    # # w = min(*ellipse[1]) / 2
+    w = np.max(dist_frame)
+    return w
 
 def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
     """
@@ -95,15 +96,21 @@ def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
     :return: x, y location of the tooltip [px]
     """
 
-    if (therm_frame > t_death).any():
+    if (therm_frame > (t_death + 10)).any():
         # return np.unravel_index(np.argmax(therm_frame), therm_frame.shape)
-        top_temps = therm_frame > t_death
-        corners = cv.cornerHarris(top_temps.astype(np.uint8), 5, 3, 0.07)
-        corners = cv.dilate(corners, None)
-        corners = corners * (therm_frame - therm_frame.min()) > 0.1 * corners.max() * (therm_frame.max() - therm_frame.min())
+        top_temps = therm_frame > (t_death +  10)
+        top_mask = np.zeros_like(top_temps)
+        mid_x, mid_y = top_mask.shape[0] / 2, top_mask.shape[1] / 2 
+        top_mask[:int(mid_x), :] = 1
+        top_temps = np.bitwise_and(top_temps, top_mask)
+        # corners = cv.cornerHarris(top_temps.astype(np.uint8), 5, 3, 0.07)
+        # corners = cv.dilate(corners, None, iterations=2)
+        # corners = corners * (therm_frame - therm_frame.min()) > 0.1 * corners.max() * (therm_frame.max() - therm_frame.min())
         # cv.imshow("corners", corners.astype(np.uint8) * 255)
+        # cv.imshow("bin", top_temps.astype(np.uint8) * 255)
         # return coordinate of corner-most true value
-        coordinates = np.where(corners)
+        coordinates = np.where(top_temps)
+        left_most = np.argmin(coordinates[1])
         right_most = np.argmax(coordinates[1])
         # row = y, col = x
         tip = (coordinates[1][right_most], coordinates[0][right_most])
