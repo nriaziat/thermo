@@ -129,7 +129,7 @@ class DeflectionAdaptation(UKFIdentification):
         ky = 1
         defl_force = -kx * defl[0] - ky * defl[1]
         cut_force = cut_force_model(v, d)
-        F = defl_force - (cut_force * np.array([1, 0])) # - (0.1 * x[2:4])
+        F = defl_force - (cut_force * np.array([1, 0])) - (0.1 * x[2:4])
         x[0] += x[2] * dt
         x[1] += x[3] * dt
         x[2:4] += F * dt

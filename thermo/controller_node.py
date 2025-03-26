@@ -221,7 +221,7 @@ def main(params_path: str, calibration_path: str, recorded_data: bool, speed: fl
                 w_mm = 0
                 u0 = 3
         except ValueError as e:
-            node.get_logger().warn(f"Covariance error, {e}")
+            node.get_logger().warn(f"{e}")
             therm_adaptation = ThermalAdaptation(
                 np.array([0, 40, material.Cp, material.rho * 1e9, material.k * 1e3]),
                 labels=["w", "P", "Cp", "rho", "k"],

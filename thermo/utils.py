@@ -95,14 +95,15 @@ def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
     :param t_death: Iotherm temperature [C]
     :return: x, y location of the tooltip [px]
     """
-
-    if (therm_frame > (t_death + 10)).any():
-        # return np.unravel_index(np.argmax(therm_frame), therm_frame.shape)
-        top_temps = therm_frame > (t_death +  10)
+    thresh_temp = t_death + 10
+    top_temps = therm_frame > thresh_temp
+    # print(therm_frame.max())
+    if top_temps.any():
         top_mask = np.zeros_like(top_temps)
-        mid_x, mid_y = top_mask.shape[0] / 2, top_mask.shape[1] / 2 
-        top_mask[:int(mid_x), :] = 1
+        low_x, high_x = top_mask.shape[0] / 3, 2 * top_mask.shape[0] / 3 
+        top_mask[(int(low_x)):int(high_x), :] = 1
         top_temps = np.bitwise_and(top_temps, top_mask)
+        top_temps = therm_frame == therm_frame.max()
         # corners = cv.cornerHarris(top_temps.astype(np.uint8), 5, 3, 0.07)
         # corners = cv.dilate(corners, None, iterations=2)
         # corners = corners * (therm_frame - therm_frame.min()) > 0.1 * corners.max() * (therm_frame.max() - therm_frame.min())
@@ -110,6 +111,8 @@ def find_tooltip(therm_frame: np.ndarray, t_death) -> tuple | None:
         # cv.imshow("bin", top_temps.astype(np.uint8) * 255)
         # return coordinate of corner-most true value
         coordinates = np.where(top_temps)
+        if len(coordinates[1]) == 0:
+            return None
         left_most = np.argmin(coordinates[1])
         right_most = np.argmax(coordinates[1])
         # row = y, col = x
