@@ -1,4 +1,5 @@
 import cv2
+import cv2.dnn_superres
 import numpy as np
 from datetime import datetime
 import math
@@ -345,19 +346,31 @@ class T3pro:
         self.cap.release()
 
 
+
 if __name__ == "__main__":
-    # writer = cv2.VideoWriter('output_16.avi', cv2.VideoWriter.fourcc(*'XVID'), 30, (384, 288))
-    with T3pro(port=1) as t3:
-        while True:
-            ret, frame = t3.read()
-            _, lut = t3.info()
-            temp_array = lut[frame]
-            if ret:
-                frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-                frame = cv2.applyColorMap(frame, cv2.COLORMAP_HOT)
-                # writer.write(frame)
-                cv2.imshow('frame', frame)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    break
-    # writer.release()
+    import click
+    @click.command()    
+    @click.option('--port', default=0, type=int)
+    @click.option('--supersample/--no_supersample', default=False)
+    def main(port: int, supersample: bool):
+
+        with T3pro(port=port) as t3:
+            while True:
+                ret, frame = t3.read()
+                _, lut = t3.info()
+                temp_array = lut[frame]
+                if ret:
+                    frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                    frame = cv2.applyColorMap(frame, cv2.COLORMAP_HOT)
+
+                    if supersample: 
+                        frame = cv2.resize(frame, fx=3, fy=3, interpolation=cv2.INTER_CUBIC, dsize=None)
+
+                    # writer.write(frame)
+                    cv2.imshow('frame', frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        break
+
+    main()
+
